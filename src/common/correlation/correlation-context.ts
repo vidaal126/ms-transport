@@ -1,0 +1,19 @@
+import { PinoLogger } from "nestjs-pino";
+import { Store, storage } from "nestjs-pino/storage";
+import type { Logger } from "pino";
+
+// Executa fn com um logger filho carregando correlationId no mesmo
+// AsyncLocalStorage que o nestjs-pino usa por requisicao HTTP: todo log feito
+// via PinoLogger/ILogger dentro de fn sai com o campo, sem passar parametro.
+// Usado fora do ciclo HTTP (consumers Kafka).
+export async function runWithCorrelationId<T>(
+  correlationId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  // PinoLogger.root so existe depois que o LoggerModule registra o middleware
+  // (o tipo declarado nao reflete isso); sem ele, executa sem contexto.
+  const root: Logger | undefined = PinoLogger.root;
+  const base = storage.getStore()?.logger ?? root;
+  if (!base) return fn();
+  return storage.run(new Store(base.child({ correlationId })), fn);
+}
