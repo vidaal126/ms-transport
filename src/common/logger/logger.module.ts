@@ -35,6 +35,10 @@ type ExpressLike = IncomingMessage & { route?: { path?: string } };
             res.setHeader(CORRELATION_ID_HEADER, correlationId);
             return correlationId;
           },
+          autoLogging: {
+            ignore: (req: IncomingMessage): boolean =>
+              req.url?.startsWith("/health") ?? false,
+          },
           // quietReqLogger + reqId renomeado: o logger da requisicao (usado
           // pelo nestjs-pino em todo log do request) carrega so correlationId,
           // uma vez. Via customProps ele sairia duplicado na linha final.
