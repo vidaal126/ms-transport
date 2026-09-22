@@ -16,6 +16,14 @@ export const envSchema = z.object({
     .string()
     .regex(/^amqps?:\/\//, "deve ser uma URL amqp://")
     .default("amqp://guest:guest@localhost:5672"),
+
+  // Lista separada por virgula: "host1:9092,host2:9092".
+  KAFKA_BROKER: z
+    .string()
+    .min(1)
+    .transform((value) => value.split(",").map((broker) => broker.trim()))
+    .pipe(z.array(z.string().regex(/^[^\s:]+:\d+$/, "formato host:porta")).min(1)),
+  KAFKA_CLIENT_ID: z.string().min(1).default("ms-transport"),
 });
 
 export type Env = z.infer<typeof envSchema>;
