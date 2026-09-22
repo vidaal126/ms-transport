@@ -24,6 +24,9 @@ export const envSchema = z.object({
     .transform((value) => value.split(",").map((broker) => broker.trim()))
     .pipe(z.array(z.string().regex(/^[^\s:]+:\d+$/, "formato host:porta")).min(1)),
   KAFKA_CLIENT_ID: z.string().min(1).default("ms-transport"),
+
+  THROTTLE_DEFAULT_TTL_MS: z.coerce.number().int().positive().default(60_000),
+  THROTTLE_DEFAULT_LIMIT: z.coerce.number().int().positive().default(100),
 });
 
 export type Env = z.infer<typeof envSchema>;

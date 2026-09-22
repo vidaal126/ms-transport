@@ -869,6 +869,11 @@
     jsonc-parser "3.3.1"
     pluralize "8.0.0"
 
+"@nestjs/throttler@^6":
+  version "6.7.0"
+  resolved "https://registry.yarnpkg.com/@nestjs/throttler/-/throttler-6.7.0.tgz#ccfdb03c32ab30d3b59be4ed3c08f5103890a3bf"
+  integrity sha512-+trKbv/9w8e8kZNVHF8X+q2LdpbYwKa8+PcUsZ4kUIJo2TOeS7CsNPvkwd7tOFrog8sbGrBBxWyp1roZJYbF6w==
+
 "@pinojs/redact@^0.4.0":
   version "0.4.0"
   resolved "https://registry.yarnpkg.com/@pinojs/redact/-/redact-0.4.0.tgz#c3de060dd12640dcc838516aa2a6803cc7b2e9d6"
@@ -3102,6 +3107,11 @@ hasown@^2.0.2, hasown@^2.0.4:
   integrity sha512-T2UbfbBEF32wiepXIsMlTW9+dDYC6wMh/t/vYA4tuOMKqWz/n3vr1NFSxQiyP+zk2mXsoMA/i/7qV6LKut1t1A==
   dependencies:
     function-bind "^1.1.2"
+
+helmet@^8:
+  version "8.3.0"
+  resolved "https://registry.yarnpkg.com/helmet/-/helmet-8.3.0.tgz#3842eea921e7c7015d11f217910c710c434efb26"
+  integrity sha512-Qgpiaws3Sm30Av8Eah6sjMCZZwjlBu+E68rhpCWBshY1lb09HtLwj5GviX0OyQIn+ulUS0iX0AxN5n3tLZzz1w==
 
 help-me@^5.0.0:
   version "5.0.0"
