@@ -24,6 +24,11 @@ export const envSchema = z.object({
     .transform((value) => value.split(",").map((broker) => broker.trim()))
     .pipe(z.array(z.string().regex(/^[^\s:]+:\d+$/, "formato host:porta")).min(1)),
   KAFKA_CLIENT_ID: z.string().min(1).default("ms-transport"),
+  // Retry por mensagem com falha recuperavel (backoff exponencial do KafkaJS);
+  // esgotado, o consumer crasha e reinicia sozinho.
+  CONSUMER_RETRY_RETRIES: z.coerce.number().int().min(0).default(5),
+  CONSUMER_RETRY_INITIAL_MS: z.coerce.number().int().positive().default(300),
+  CONSUMER_RETRY_MAX_MS: z.coerce.number().int().positive().default(30_000),
 
   THROTTLE_DEFAULT_TTL_MS: z.coerce.number().int().positive().default(60_000),
   THROTTLE_DEFAULT_LIMIT: z.coerce.number().int().positive().default(100),

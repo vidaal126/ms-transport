@@ -10,10 +10,12 @@ export async function runWithCorrelationId<T>(
   correlationId: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  // PinoLogger.root so existe depois que o LoggerModule registra o middleware
-  // (o tipo declarado nao reflete isso); sem ele, executa sem contexto.
+  // Parte do logger raiz (nao do contexto atual): chamadas aninhadas trocam o
+  // correlationId em vez de repetir a chave. PinoLogger.root so existe depois
+  // que o LoggerModule registra o middleware (o tipo declarado nao reflete
+  // isso); sem ele, usa o contexto atual ou executa sem contexto.
   const root: Logger | undefined = PinoLogger.root;
-  const base = storage.getStore()?.logger ?? root;
+  const base = root ?? storage.getStore()?.logger;
   if (!base) return fn();
   return storage.run(new Store(base.child({ correlationId })), fn);
 }

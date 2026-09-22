@@ -18,8 +18,9 @@ export const EVENT_HEADERS = {
 
 export interface OutboundMessage {
   readonly topic: string;
-  readonly key: string;
-  readonly value: string;
+  readonly key: string | null;
+  // Buffer permite republicar bytes originais sem reserializar (DLT).
+  readonly value: string | Buffer | null;
   readonly headers: Readonly<Record<string, string>>;
 }
 

@@ -4,6 +4,7 @@ import { APP_GUARD } from "@nestjs/core";
 import { ThrottlerModule } from "@nestjs/throttler";
 import { LoggerModule } from "@common/logger/logger.module";
 import { type Env, readEnv, validateEnv } from "@config/env";
+import { CatalogSyncModule } from "@infrastructure/catalog-sync.module";
 import { PrismaModule } from "@infrastructure/database/prisma/prisma.module";
 import { HttpThrottlerGuard } from "@infrastructure/http/guards/http-throttler.guard";
 import { MessagingModule } from "@infrastructure/messaging/messaging.module";
@@ -27,6 +28,7 @@ import { TransportAvailabilityModule } from "@infrastructure/messaging/transport
     }),
     PrismaModule,
     MessagingModule,
+    CatalogSyncModule,
     TransportAvailabilityModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: HttpThrottlerGuard }],
