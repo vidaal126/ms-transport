@@ -1,0 +1,24 @@
+// Read model do ms-catalog: so o que transporte precisa. itemId e o id do
+// catalogo (nao gerado localmente).
+model CatalogItem {
+  itemId           String   @id
+  sku              String
+  weightKg         Decimal  @db.Decimal(10, 3)
+  lengthCm         Decimal  @db.Decimal(10, 2)
+  widthCm          Decimal  @db.Decimal(10, 2)
+  heightCm         Decimal  @db.Decimal(10, 2)
+  sourceEventId    String
+  sourceOccurredAt DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@map("catalog_items")
+}
+
+model ProcessedEvent {
+  eventId     String   @id
+  eventType   String
+  processedAt DateTime @default(now())
+
+  @@map("processed_events")
+}
