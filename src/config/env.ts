@@ -27,6 +27,8 @@ export const envSchema = z.object({
 
   THROTTLE_DEFAULT_TTL_MS: z.coerce.number().int().positive().default(60_000),
   THROTTLE_DEFAULT_LIMIT: z.coerce.number().int().positive().default(100),
+
+  SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
 });
 
 export type Env = z.infer<typeof envSchema>;
