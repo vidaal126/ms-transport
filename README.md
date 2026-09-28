@@ -85,30 +85,30 @@ Headers da DLT: `dlt-reason`, `dlt-detail`, `dlt-source-topic`,
 
 ## Como subir
 
-### Com o ms-catalog (recomendado)
+O ambiente compartilhado (Postgres com os databases `catalog` e `transport`,
+Kafka, Kafka UI e os dois serviços) fica no repositório irmão
+[`../ms-platform`](../ms-platform/README.md).
 
-O `docker-compose.yml` do **ms-catalog** sobe os dois serviços e toda a
-infraestrutura (Kafka, os dois Postgres, Kafka UI). Veja o README de lá:
+### Tudo em container
 
 ```bash
-cd ../ms-catalog && docker compose up -d --build
+cd ../ms-platform && docker compose up -d --build
 ```
 
-O ms-transport fica em http://localhost:3001.
+O ms-transport fica em http://localhost:3001. O job `transport-migrate` aplica
+as migrations antes do app subir.
 
 ### No host
 
-Com a infraestrutura do compose do ms-catalog no ar
-(`docker compose up -d catalog-db transport-db kafka kafka-init kafka-ui`):
-
 ```bash
+(cd ../ms-platform && docker compose up -d postgres kafka kafka-init kafka-ui)
 cp .env.example .env
-corepack yarn@1.22.22 install
-npx prisma migrate deploy
-corepack yarn@1.22.22 start
+yarn install
+yarn prisma migrate deploy
+yarn start
 ```
 
-Use Yarn 1 (`corepack yarn@1.22.22`); o Yarn 4 converte o projeto para PnP.
+O projeto fixa Yarn 1 (`packageManager: yarn@1.22.22`, `yarn.lock` v1).
 
 ## Variáveis de ambiente
 
@@ -159,7 +159,7 @@ KafkaJS se ela não existir; o tópico de eventos precisa existir.
 Pela Kafka UI (http://localhost:8090) ou:
 
 ```bash
-docker exec catalog-kafka kafka-console-consumer --bootstrap-server localhost:29092 \
+docker compose -f ../ms-platform/docker-compose.yml exec kafka kafka-console-consumer --bootstrap-server kafka:29092 \
   --topic catalog.ItemCreated.DLT --from-beginning --property print.headers=true
 ```
 
@@ -175,7 +175,7 @@ seguro: evento já processado vira duplicata e evento mais antigo que o gravado
 falha com o group ativo.
 
 ```bash
-docker exec catalog-kafka kafka-consumer-groups --bootstrap-server localhost:29092 \
+docker compose -f ../ms-platform/docker-compose.yml exec kafka kafka-consumer-groups --bootstrap-server kafka:29092 \
   --group ms-transport.catalog-item-sync --topic catalog.ItemCreated \
   --reset-offsets --to-earliest --execute
 ```
@@ -184,13 +184,13 @@ docker exec catalog-kafka kafka-consumer-groups --bootstrap-server localhost:290
 group principal não é tocado:
 
 ```bash
-CATALOG_SYNC_GROUP_ID=ms-transport.catalog-item-sync.replay-20260923 corepack yarn@1.22.22 start
+CATALOG_SYNC_GROUP_ID=ms-transport.catalog-item-sync.replay-20260923 yarn start
 ```
 
 Quando terminar, apague o group temporário:
 
 ```bash
-docker exec catalog-kafka kafka-consumer-groups --bootstrap-server localhost:29092 \
+docker compose -f ../ms-platform/docker-compose.yml exec kafka kafka-consumer-groups --bootstrap-server kafka:29092 \
   --delete --group ms-transport.catalog-item-sync.replay-20260923
 ```
 
@@ -199,8 +199,10 @@ Para acompanhar o progresso: `kafka-consumer-groups --describe --group <group>`.
 ## Testes
 
 ```bash
-corepack yarn@1.22.22 test              # unitários
-corepack yarn@1.22.22 test:integration  # Postgres e Kafka reais (testcontainers)
+yarn lint              # eslint + typescript-eslint (strictTypeChecked)
+yarn typecheck         # tsc --noEmit
+yarn test              # unitários
+yarn test:integration  # Postgres e Kafka reais (testcontainers)
 ```
 
 A suíte de integração publica a massa do tópico (2 eventos legados, 1 mensagem
