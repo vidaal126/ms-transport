@@ -1,5 +1,7 @@
 # ms-transport
 
+> Plataforma: [ms-platform](https://github.com/vidaal126/ms-platform#readme) · [ms-gateway](https://github.com/vidaal126/ms-gateway#readme) · [ms-auth](https://github.com/vidaal126/ms-auth#readme) · [ms-catalog](https://github.com/vidaal126/ms-catalog#readme) · **ms-transport** · [ms-customer](https://github.com/vidaal126/ms-customer#readme) · [ms-sales-order](https://github.com/vidaal126/ms-sales-order#readme)
+
 Microsserviço de transporte (NestJS, Prisma, PostgreSQL, Kafka):
 
 - **Kafka**: consumer de `catalog.ItemCreated` que mantém o read model
@@ -91,7 +93,7 @@ Headers da DLT: `dlt-reason`, `dlt-detail`, `dlt-source-topic`,
 
 O ambiente compartilhado (Postgres com os databases `catalog` e `transport`,
 Kafka, Kafka UI e os dois serviços) fica no repositório irmão
-[`../ms-platform`](../ms-platform/README.md).
+[`../ms-platform`](https://github.com/vidaal126/ms-platform#readme).
 
 ### Tudo em container
 
@@ -154,7 +156,7 @@ Validadas com Zod no bootstrap; a aplicação não sobe com env inválida.
 | Método | Rota | Descrição |
 |---|---|---|
 | `POST` | `/transport-types` | cria (`name` único, `description?`); 409 se o nome existir |
-| `PUT` | `/transport-types/:id` | altera `name`, `description` (null limpa) e `active`; sem mudança, não publica evento |
+| `PUT` | `/transport-types/:id` | altera `name`, `description` (null limpa) e `active`; sem mudança, não publica evento. 409 quando outra requisição alterou o tipo entre a leitura e a gravação (controle otimista por `version`): releia e repita |
 | `GET` | `/transport-types` | lista paginada (`page`, `limit` até 100) com `total` |
 | `GET` | `/transport-types/:id` | 404 se não existir |
 | `GET` | `/catalog-items/:itemId` | item do read model (400 se não for UUID, 404 se não existir) |
@@ -248,6 +250,9 @@ ms-catalog (`yarn test:e2e`).
 
 ## Limitações conhecidas
 
+- **Ordem por agregado no outbox**: os eventos saem na ordem de gravação
+  (`sequence`). Se o envio de um evento falha, os seguintes do mesmo
+  agregado esperam o próximo ciclo; os de outros agregados seguem.
 - **Eventos legados sem peso e dimensões** (anteriores ao `schemaVersion: 1`)
   não têm dado para um upcaster reconstruir: vão para a DLT com
   `unsupported_schema_version`.
