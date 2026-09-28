@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import type { INestApplication } from "@nestjs/common";
 import { KafkaContainer, type StartedKafkaContainer } from "@testcontainers/kafka";
+import type { NestExpressApplication } from "@nestjs/platform-express";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { z } from "zod";
 import {
@@ -63,7 +63,7 @@ describe("ms-transport: tipos de transporte (integracao)", () => {
   let postgres: StartedPostgreSqlContainer;
   let kafkaContainer: StartedKafkaContainer;
   let kafka: KafkaTestClient;
-  let app: INestApplication;
+  let app: NestExpressApplication;
   let baseUrl: string;
 
   beforeAll(async () => {
@@ -92,13 +92,14 @@ describe("ms-transport: tipos de transporte (integracao)", () => {
       DATABASE_URL: databaseUrl,
       KAFKA_BROKER: broker,
       OUTBOX_POLL_INTERVAL_MS: "200",
+      THROTTLE_DEFAULT_LIMIT: "100",
     });
 
     const { NestFactory } = await import("@nestjs/core");
     const { AppModule } = await import("../../src/app.module");
     const { configureApp } = await import("../../src/app.setup");
 
-    app = await NestFactory.create(AppModule, { logger: false });
+    app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: false });
     configureApp(app);
     await app.listen(0);
     baseUrl = (await app.getUrl()).replace("[::1]", "localhost");
@@ -228,5 +229,23 @@ describe("ms-transport: tipos de transporte (integracao)", () => {
     ).toBeGreaterThanOrEqual(1);
     expect(sampleValue(text, "outbox_events_published_total", { event_type: "TransportTypeCreated" })).toBe(1);
     expect(sampleValue(text, "outbox_pending_events", {})).toBe(0);
+  });
+
+  // Roda por ultimo: esgota o balde de um cliente.
+  it("throttler conta por cliente (X-Forwarded-For do gateway), nao pelo proxy", async () => {
+    const listFrom = async (clientIp: string): Promise<number> => {
+      const response = await fetch(`${baseUrl}/transport-types?page=1&limit=1`, {
+        headers: { "x-forwarded-for": clientIp },
+      });
+      await response.text();
+      return response.status;
+    };
+    const limit = Number(process.env.THROTTLE_DEFAULT_LIMIT);
+
+    for (let attempt = 0; attempt < limit; attempt++) {
+      expect(await listFrom("203.0.113.10")).toBe(200);
+    }
+    expect(await listFrom("203.0.113.10")).toBe(429);
+    expect(await listFrom("203.0.113.20")).toBe(200);
   });
 });

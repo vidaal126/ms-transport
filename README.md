@@ -274,6 +274,11 @@ ms-catalog (`yarn test:e2e`).
   reprocessamento é seguro (o guard de `sourceOccurredAt` descarta como
   `stale`), mas `processed_events` guarda as duas gerações de id e o group
   antigo fica órfão no broker até ser removido manualmente.
+- **Rate limit em memória**: vale por réplica. O `trust proxy` confia em
+  exatamente 1 salto (o ms-gateway, que anexa o IP do cliente ao
+  `X-Forwarded-For`), então o limite conta por cliente e não pelo IP do
+  gateway. Acessar o serviço direto, sem o gateway, permite escolher o IP
+  contado via `X-Forwarded-For`.
 - **Envio com timeout**: o producer tem retries ilimitados (exigência do modo
   idempotente), então cada envio é limitado por `KAFKA_SEND_TIMEOUT_MS`. Um
   envio que estoura o teto conta como falha: no outbox o evento fica pendente
