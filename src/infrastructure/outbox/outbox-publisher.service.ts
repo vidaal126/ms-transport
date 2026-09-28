@@ -16,8 +16,9 @@ import { OutboxRepository } from "./outbox.repository";
 // na tabela outbox_events não serve pra nada - é só um log morto.
 //
 // O que ele faz, a cada tick:
-// 1. Busca até BATCH_SIZE eventos com publishedAt = null (não publicados)
-// 2. Envia cada um pro Kafka
+// 1. Busca até BATCH_SIZE eventos com publishedAt = null, em ordem de sequence
+// 2. Envia cada um pro Kafka; se um envio falha, os
+//    eventos seguintes do mesmo agregado esperam o próximo tick
 // 3. Marca publishedAt = now() SÓ depois de confirmar o envio
 //
 // Dor proposital: se o processo morrer entre o envio ao Kafka e o UPDATE
@@ -78,9 +79,14 @@ export class OutboxPublisherService implements OnModuleInit, OnModuleDestroy {
       const pending = await this.outbox.findPending(this.batchSize);
 
       const publishedIds: string[] = [];
+      // Agregados com falha neste ciclo: os eventos seguintes do mesmo
+      // agregado ficam para o proximo tick, senao sairiam fora de ordem.
+      // Os demais agregados seguem publicando.
+      const blockedAggregates = new Set<string>();
 
       for (const event of pending) {
         if (this.stopping) break;
+        if (blockedAggregates.has(event.aggregateId)) continue;
 
         try {
           await this.kafkaProducer.send(toOutboundMessage(event));
@@ -93,8 +99,9 @@ export class OutboxPublisherService implements OnModuleInit, OnModuleDestroy {
             { eventId: event.id, correlationId: event.correlationId },
           );
         } catch (err) {
+          blockedAggregates.add(event.aggregateId);
           this.logger.error(
-            `Falha ao publicar evento ${event.id}`,
+            `Falha ao publicar evento ${event.id}; agregado ${event.aggregateId} bloqueado ate o proximo ciclo`,
             toError(err),
           );
         }

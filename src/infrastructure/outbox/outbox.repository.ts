@@ -6,10 +6,12 @@ import { PrismaService } from "@infrastructure/database/prisma/prisma.service";
 export class OutboxRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  // Ordem de gravacao (sequence): createdAt empata e pode inverter eventos do
+  // mesmo agregado gravados em transacoes concorrentes.
   async findPending(limit: number): Promise<OutboxEvent[]> {
     return this.prisma.outboxEvent.findMany({
       where: { publishedAt: null },
-      orderBy: { createdAt: "asc" },
+      orderBy: { sequence: "asc" },
       take: limit,
     });
   }

@@ -13,8 +13,11 @@ model TransportType {
 
 // Transactional Outbox: eventos gravados na mesma transacao do agregado e
 // publicados pelo OutboxPublisherService. id = eventId do envelope.
+// sequence da a ordem de publicacao: createdAt empata e nao e monotonico
+// entre transacoes, entao nao serve para ordenar eventos do mesmo agregado.
 model OutboxEvent {
   id            String    @id @default(uuid())
+  sequence      BigInt    @unique @default(autoincrement())
   aggregateId   String
   eventType     String
   schemaVersion Int
