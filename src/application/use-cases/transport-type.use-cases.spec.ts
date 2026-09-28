@@ -1,4 +1,5 @@
 import {
+  TransportTypeConcurrentModificationError,
   TransportTypeNameAlreadyExistsError,
   TransportTypeNotFoundError,
 } from "@domain/errors/transport-type.errors";
@@ -27,7 +28,7 @@ describe("casos de uso de TransportType", () => {
       context,
     );
 
-    expect(repository.rows.get(created.id)).toBe(created);
+    expect(repository.rows.get(created.id)).toMatchObject({ id: created.id, name: "Caminhao", version: 0 });
     expect(repository.outbox).toHaveLength(1);
     expect(repository.outbox[0]).toMatchObject({
       event: { eventType: "TransportTypeCreated", aggregateId: created.id },
@@ -81,6 +82,44 @@ describe("casos de uso de TransportType", () => {
 
     expect(updated.active).toBe(false);
     expect(repository.updates).toBe(1);
+    expect(repository.outbox.map((entry) => entry.event.eventType)).toEqual([
+      "TransportTypeCreated",
+      "TransportTypeUpdated",
+    ]);
+  });
+
+  it("atualizar incrementa a versao gravada", async () => {
+    const created = await new CreateTransportTypeUseCase(repository, () => NOW).execute(
+      { name: "Caminhao" },
+      context,
+    );
+
+    await new UpdateTransportTypeUseCase(repository, () => LATER).execute(
+      { id: created.id, active: false },
+      context,
+    );
+
+    expect(repository.rows.get(created.id)?.version).toBe(1);
+  });
+
+  it("gravacao concorrente com versao antiga: TransportTypeConcurrentModificationError", async () => {
+    const created = await new CreateTransportTypeUseCase(repository, () => NOW).execute(
+      { name: "Caminhao" },
+      context,
+    );
+    // Duas requisicoes leem a mesma versao; a primeira grava antes.
+    const stale = await repository.findById(created.id);
+    if (!stale) throw new Error("tipo recem-criado nao encontrado");
+    await new UpdateTransportTypeUseCase(repository, () => LATER).execute(
+      { id: created.id, name: "Carreta" },
+      context,
+    );
+    stale.update({ active: false, now: LATER });
+
+    await expect(repository.update(stale, context)).rejects.toBeInstanceOf(
+      TransportTypeConcurrentModificationError,
+    );
+    expect(repository.rows.get(created.id)).toMatchObject({ name: "Carreta", active: true, version: 1 });
     expect(repository.outbox.map((entry) => entry.event.eventType)).toEqual([
       "TransportTypeCreated",
       "TransportTypeUpdated",

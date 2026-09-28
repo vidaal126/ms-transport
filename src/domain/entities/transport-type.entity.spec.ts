@@ -20,6 +20,7 @@ describe("TransportType", () => {
     expect(transportType.name).toBe("Caminhao bau");
     expect(transportType.description).toBeNull();
     expect(transportType.active).toBe(true);
+    expect(transportType.version).toBe(0);
 
     const events = transportType.pullDomainEvents();
     expect(events).toHaveLength(1);
@@ -75,16 +76,18 @@ describe("TransportType", () => {
     expect(transportType.description).toBeNull();
   });
 
-  it("restore nao registra evento", () => {
+  it("restore mantem a versao lida e nao registra evento", () => {
     const restored = TransportType.restore({
       id: "11111111-1111-4111-8111-111111111111",
       name: "Moto",
       description: null,
       active: true,
+      version: 3,
       createdAt: T0,
       updatedAt: T0,
     });
 
+    expect(restored.version).toBe(3);
     expect(restored.pullDomainEvents()).toHaveLength(0);
   });
 });

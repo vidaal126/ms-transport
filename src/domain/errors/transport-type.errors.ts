@@ -16,4 +16,11 @@ export class TransportTypeNameAlreadyExistsError extends EntityConflictError {
   }
 }
 
+// Outra requisicao alterou o tipo entre a leitura e a gravacao.
+export class TransportTypeConcurrentModificationError extends EntityConflictError {
+  constructor(readonly transportTypeId: string) {
+    super(`Tipo de transporte ${transportTypeId} foi alterado por outra requisicao; tente de novo`);
+  }
+}
+
 export class InvalidTransportTypeError extends InvariantViolationError {}

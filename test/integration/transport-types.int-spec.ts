@@ -3,8 +3,14 @@ import type { INestApplication } from "@nestjs/common";
 import { KafkaContainer, type StartedKafkaContainer } from "@testcontainers/kafka";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { z } from "zod";
+import {
+  type ITransportTypeRepository,
+  TRANSPORT_TYPE_REPOSITORY,
+} from "@application/ports/transport-type.repository.port";
+import { TransportTypeConcurrentModificationError } from "@domain/errors/transport-type.errors";
+import type { PrismaService } from "@infrastructure/database/prisma/prisma.service";
 import { sampleValue } from "../../src/test/metrics.helpers";
-import { KafkaTestClient } from "./kafka-test-client";
+import { KafkaTestClient, waitFor } from "./kafka-test-client";
 
 const CREATED_TOPIC = "transport.TransportTypeCreated";
 const UPDATED_TOPIC = "transport.TransportTypeUpdated";
@@ -161,6 +167,36 @@ describe("ms-transport: tipos de transporte (integracao)", () => {
     expect(envelope.payload).toMatchObject({ id: createdId, active: false });
   });
 
+  it("update concorrente com versao antiga falha com conflito (409) sem gravar nem publicar", async () => {
+    const { PrismaService: PrismaServiceToken } = await import(
+      "@infrastructure/database/prisma/prisma.service"
+    );
+    const prisma = app.get<PrismaService>(PrismaServiceToken);
+    const repository = app.get<ITransportTypeRepository>(TRANSPORT_TYPE_REPOSITORY);
+    const context = { correlationId: "tt-conflict" };
+    const countUpdates = (): Promise<number> =>
+      prisma.outboxEvent.count({
+        where: { aggregateId: createdId, eventType: "TransportTypeUpdated" },
+      });
+
+    // Duas requisicoes leem a mesma versao; a primeira grava antes.
+    const first = await repository.findById(createdId);
+    const second = await repository.findById(createdId);
+    if (!first || !second) throw new Error("tipo criado nao encontrado");
+    const updatesBefore = await countUpdates();
+
+    first.update({ description: "Primeira", now: new Date() });
+    await repository.update(first, context);
+    second.update({ description: "Segunda", now: new Date() });
+
+    await expect(repository.update(second, context)).rejects.toBeInstanceOf(
+      TransportTypeConcurrentModificationError,
+    );
+    const stored = await prisma.transportType.findUniqueOrThrow({ where: { id: createdId } });
+    expect(stored).toMatchObject({ description: "Primeira", version: second.version + 1 });
+    expect(await countUpdates()).toBe(updatesBefore + 1);
+  });
+
   it("GET por id, 404 para inexistente e listagem paginada com total", async () => {
     const found = await send("GET", `${baseUrl}/transport-types/${createdId}`);
     const missing = await send(
@@ -175,6 +211,9 @@ describe("ms-transport: tipos de transporte (integracao)", () => {
   });
 
   it("GET /metrics expoe latencia por template de rota e eventos publicados", async () => {
+    const scrape = async (): Promise<string> => (await fetch(`${baseUrl}/metrics`)).text();
+    // O publisher marca publishedAt depois de enviar o lote: espera o ciclo fechar.
+    await waitFor("outbox drenado", async () => sampleValue(await scrape(), "outbox_pending_events", {}) === 0);
     const response = await fetch(`${baseUrl}/metrics`);
     const text = await response.text();
 

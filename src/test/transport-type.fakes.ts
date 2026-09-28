@@ -1,5 +1,8 @@
-import type { TransportType } from "@domain/entities/transport-type.entity";
-import { TransportTypeNameAlreadyExistsError } from "@domain/errors/transport-type.errors";
+import { TransportType } from "@domain/entities/transport-type.entity";
+import {
+  TransportTypeConcurrentModificationError,
+  TransportTypeNameAlreadyExistsError,
+} from "@domain/errors/transport-type.errors";
 import type { TransportTypeEvent } from "@domain/events/transport-type.events";
 import type {
   ITransportTypeRepository,
@@ -9,7 +12,8 @@ import type {
 } from "@application/ports/transport-type.repository.port";
 
 // Repositorio em memoria: guarda os eventos "gravados no outbox" para os
-// testes verificarem o que seria publicado.
+// testes verificarem o que seria publicado. Guarda copias (como o banco), para
+// que duas leituras do mesmo id sejam instancias independentes.
 export class InMemoryTransportTypeRepository implements ITransportTypeRepository {
   readonly rows = new Map<string, TransportType>();
   readonly outbox: Array<{ event: TransportTypeEvent; context: PersistenceContext }> = [];
@@ -28,14 +32,18 @@ export class InMemoryTransportTypeRepository implements ITransportTypeRepository
   async create(transportType: TransportType, context: PersistenceContext): Promise<void> {
     const duplicated = [...this.rows.values()].some((t) => t.name === transportType.name);
     if (duplicated) throw new TransportTypeNameAlreadyExistsError(transportType.name);
-    this.rows.set(transportType.id, transportType);
     this.pushEvents(transportType, context);
+    this.rows.set(transportType.id, snapshot(transportType, transportType.version));
   }
 
   async update(transportType: TransportType, context: PersistenceContext): Promise<void> {
+    const stored = this.rows.get(transportType.id);
+    if (stored?.version !== transportType.version) {
+      throw new TransportTypeConcurrentModificationError(transportType.id);
+    }
     this.updates += 1;
-    this.rows.set(transportType.id, transportType);
     this.pushEvents(transportType, context);
+    this.rows.set(transportType.id, snapshot(transportType, transportType.version + 1));
   }
 
   private pushEvents(transportType: TransportType, context: PersistenceContext): void {
@@ -43,4 +51,16 @@ export class InMemoryTransportTypeRepository implements ITransportTypeRepository
       this.outbox.push({ event, context });
     }
   }
+}
+
+function snapshot(transportType: TransportType, version: number): TransportType {
+  return TransportType.restore({
+    id: transportType.id,
+    name: transportType.name,
+    description: transportType.description,
+    active: transportType.active,
+    version,
+    createdAt: transportType.createdAt,
+    updatedAt: transportType.updatedAt,
+  });
 }

@@ -22,6 +22,7 @@ export interface RestoreTransportTypeProps {
   readonly name: string;
   readonly description: string | null;
   readonly active: boolean;
+  readonly version: number;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -42,6 +43,8 @@ export class TransportType extends AggregateRoot<TransportTypeEvent> {
     private _name: string,
     private _description: string | null,
     private _active: boolean,
+    // Versao lida do banco: controle otimista de concorrencia no update.
+    readonly version: number,
     readonly createdAt: Date,
     private _updatedAt: Date,
   ) {
@@ -54,6 +57,7 @@ export class TransportType extends AggregateRoot<TransportTypeEvent> {
       normalizeName(props.name),
       normalizeDescription(props.description ?? null),
       true,
+      0,
       props.now,
       props.now,
     );
@@ -70,6 +74,7 @@ export class TransportType extends AggregateRoot<TransportTypeEvent> {
       props.name,
       props.description,
       props.active,
+      props.version,
       props.createdAt,
       props.updatedAt,
     );

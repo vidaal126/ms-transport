@@ -5,8 +5,8 @@ import {
 } from "@infrastructure/database/generated/client";
 import { TransportType } from "@domain/entities/transport-type.entity";
 import {
+  TransportTypeConcurrentModificationError,
   TransportTypeNameAlreadyExistsError,
-  TransportTypeNotFoundError,
 } from "@domain/errors/transport-type.errors";
 import type {
   ITransportTypeRepository,
@@ -49,6 +49,7 @@ export class TransportTypeRepositoryPrisma implements ITransportTypeRepository {
             name: transportType.name,
             description: transportType.description,
             active: transportType.active,
+            version: transportType.version,
             createdAt: transportType.createdAt,
             updatedAt: transportType.updatedAt,
           },
@@ -68,15 +69,21 @@ export class TransportTypeRepositoryPrisma implements ITransportTypeRepository {
     const events = transportType.pullDomainEvents();
     try {
       await this.prisma.$transaction(async (tx) => {
-        await tx.transportType.update({
-          where: { id: transportType.id },
+        // Compare-and-set pela versao lida: duas alteracoes concorrentes no
+        // mesmo tipo, so uma grava; a outra recebe 409.
+        const updated = await tx.transportType.updateMany({
+          where: { id: transportType.id, version: transportType.version },
           data: {
             name: transportType.name,
             description: transportType.description,
             active: transportType.active,
             updatedAt: transportType.updatedAt,
+            version: { increment: 1 },
           },
         });
+        if (updated.count !== 1) {
+          throw new TransportTypeConcurrentModificationError(transportType.id);
+        }
         if (events.length > 0) {
           await tx.outboxEvent.createMany({
             data: events.map((event) => toOutboxEventData(event, context)),
@@ -90,11 +97,10 @@ export class TransportTypeRepositoryPrisma implements ITransportTypeRepository {
 }
 
 // P2002: nome unico violado (a constraint e a fonte de verdade, sem janela de
-// corrida). P2025: registro sumiu entre a leitura e o update.
+// corrida).
 function translateWriteError(err: unknown, transportType: TransportType): unknown {
-  if (err instanceof Prisma.PrismaClientKnownRequestError) {
-    if (err.code === "P2002") return new TransportTypeNameAlreadyExistsError(transportType.name);
-    if (err.code === "P2025") return new TransportTypeNotFoundError(transportType.id);
+  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+    return new TransportTypeNameAlreadyExistsError(transportType.name);
   }
   return err;
 }
@@ -105,6 +111,7 @@ function toDomain(row: TransportTypeModel): TransportType {
     name: row.name,
     description: row.description,
     active: row.active,
+    version: row.version,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   });

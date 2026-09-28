@@ -23,6 +23,7 @@ export interface ITransportTypeRepository {
   // Persistem o agregado e gravam seus eventos no outbox na mesma transacao.
   // Nome duplicado: TransportTypeNameAlreadyExistsError.
   create(transportType: TransportType, context: PersistenceContext): Promise<void>;
-  // Id inexistente: TransportTypeNotFoundError.
+  // Controle otimista pela versao lida: TransportTypeConcurrentModificationError
+  // se outra requisicao gravou antes.
   update(transportType: TransportType, context: PersistenceContext): Promise<void>;
 }

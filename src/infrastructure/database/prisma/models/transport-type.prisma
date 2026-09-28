@@ -4,6 +4,8 @@ model TransportType {
   name        String   @unique
   description String?
   active      Boolean  @default(true)
+  // Controle otimista: o update so grava se a versao lida ainda for a atual.
+  version     Int      @default(0)
   createdAt   DateTime
   updatedAt   DateTime
 

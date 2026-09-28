@@ -2,6 +2,7 @@ import { type ArgumentsHost, BadRequestException, HttpStatus } from "@nestjs/com
 import type { ILogger } from "@common/logger/logger.interface";
 import { CatalogItemNotFoundError, InvalidCatalogItemError } from "@domain/errors/catalog-item.errors";
 import { EntityConflictError } from "@domain/errors/domain.error";
+import { TransportTypeConcurrentModificationError } from "@domain/errors/transport-type.errors";
 import { InvalidDimensionsError } from "@domain/value-objects/dimensions.value-object";
 
 class SampleConflictError extends EntityConflictError {}
@@ -48,6 +49,7 @@ describe("GlobalExceptionFilter", () => {
   it.each([
     [new CatalogItemNotFoundError("x"), HttpStatus.NOT_FOUND],
     [new SampleConflictError("conflito"), HttpStatus.CONFLICT],
+    [new TransportTypeConcurrentModificationError("x"), HttpStatus.CONFLICT],
     [new InvalidCatalogItemError("peso invalido"), HttpStatus.UNPROCESSABLE_ENTITY],
     [new InvalidDimensionsError("lengthCm invalido"), HttpStatus.UNPROCESSABLE_ENTITY],
   ])("mapeia %p para %p", (error, status) => {
