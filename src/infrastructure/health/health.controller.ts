@@ -4,7 +4,6 @@ import { SkipThrottle } from "@nestjs/throttler";
 import { KafkaHealthIndicator } from "@infrastructure/messaging/kafka.health";
 import { CatalogConsumerHealthIndicator } from "./catalog-consumer.health";
 import { PrismaHealthIndicator } from "./prisma.health";
-import { RabbitMqHealthIndicator } from "./rabbitmq.health";
 
 @Controller("health")
 @SkipThrottle()
@@ -14,7 +13,6 @@ export class HealthController {
     private readonly database: PrismaHealthIndicator,
     private readonly kafka: KafkaHealthIndicator,
     private readonly consumer: CatalogConsumerHealthIndicator,
-    private readonly rabbitmq: RabbitMqHealthIndicator,
   ) {}
 
   // Liveness: o processo responde. Nao checa dependencias, para que uma
@@ -25,7 +23,8 @@ export class HealthController {
     return this.health.check([]);
   }
 
-  // Readiness: banco, broker Kafka, consumer do read model e RabbitMQ.
+  // Readiness: banco, broker Kafka e consumer do read model (degradado com a
+  // particao pausada por falha recuperavel).
   @Get("ready")
   @HealthCheck()
   ready(): Promise<HealthCheckResult> {
@@ -33,7 +32,6 @@ export class HealthController {
       () => this.database.isHealthy("database"),
       () => this.kafka.isHealthy("kafka"),
       () => this.consumer.isHealthy("catalogConsumer"),
-      () => this.rabbitmq.isHealthy("rabbitmq"),
     ]);
   }
 }

@@ -6,9 +6,7 @@ import {
   HttpStatus,
   Inject,
 } from "@nestjs/common";
-import { BaseRpcExceptionFilter } from "@nestjs/microservices";
 import type { Response } from "express";
-import type { Observable } from "rxjs";
 import { type ILogger, LOGGER_TOKEN } from "@common/logger/logger.interface";
 import {
   DomainError,
@@ -23,36 +21,25 @@ export interface ErrorResponseBody {
   readonly message: string | string[];
 }
 
-// Na aplicacao hibrida o APP_FILTER tambem recebe excecoes dos handlers do
-// RabbitMQ: fora do HTTP delega ao filtro RPC padrao do Nest (comportamento
-// anterior do microservico preservado).
-//
 // Ponto unico de traducao erro -> HTTP. Erros de dominio viram 404/409/422,
 // HttpException (400 do ValidationPipe, 429 do throttler, 503 do health)
 // passa como esta, e qualquer outra coisa vira 500 generico: o detalhe fica
 // so no log.
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
-  private readonly rpcFilter = new BaseRpcExceptionFilter();
-
   constructor(@Inject(LOGGER_TOKEN) private readonly logger: ILogger) {}
 
-  catch(exception: unknown, host: ArgumentsHost): Observable<unknown> | undefined {
-    if (host.getType() !== "http") {
-      return this.rpcFilter.catch(exception, host);
-    }
-
+  catch(exception: unknown, host: ArgumentsHost): void {
     const response = host.switchToHttp().getResponse<Response>();
 
     if (exception instanceof HttpException) {
       const { statusCode, body } = fromHttpException(exception);
       response.status(statusCode).json(body);
-      return undefined;
+      return;
     }
 
     const body = this.toBody(exception);
     response.status(body.statusCode).json(body);
-    return undefined;
   }
 
   private toBody(exception: unknown): ErrorResponseBody {

@@ -1,32 +1,15 @@
-import { Inject, Injectable } from "@nestjs/common";
 import { CatalogItem } from "@domain/entities/catalog-item.entity";
-import {
-  CATALOG_ITEM_REPOSITORY,
-  type ICatalogItemRepository,
-  type SyncOutcome,
-} from "@domain/repositories/catalog-item.repository";
+import type {
+  ICatalogItemRepository,
+  SyncOutcome,
+} from "@application/ports/catalog-item.repository.port";
+import type {
+  CatalogItemEvent,
+  SyncCatalogItemPort,
+} from "@application/ports/sync-catalog-item.port";
 
-// Evento de catalogo ja normalizado (qualquer versao de schema suportada).
-export interface CatalogItemEvent {
-  readonly eventId: string;
-  readonly eventType: string;
-  readonly occurredAt: Date;
-  readonly itemId: string;
-  readonly sku: string;
-  readonly weightKg: number;
-  readonly dimensions: {
-    readonly lengthCm: number;
-    readonly widthCm: number;
-    readonly heightCm: number;
-  };
-}
-
-@Injectable()
-export class SyncCatalogItemUseCase {
-  constructor(
-    @Inject(CATALOG_ITEM_REPOSITORY)
-    private readonly catalogItemRepository: ICatalogItemRepository,
-  ) {}
+export class SyncCatalogItemUseCase implements SyncCatalogItemPort {
+  constructor(private readonly catalogItemRepository: ICatalogItemRepository) {}
 
   // Lanca InvariantViolationError se o evento violar as regras do dominio.
   async execute(event: CatalogItemEvent): Promise<SyncOutcome> {

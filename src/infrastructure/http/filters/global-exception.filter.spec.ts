@@ -1,5 +1,4 @@
 import { type ArgumentsHost, BadRequestException, HttpStatus } from "@nestjs/common";
-import { isObservable } from "rxjs";
 import type { ILogger } from "@common/logger/logger.interface";
 import { CatalogItemNotFoundError, InvalidCatalogItemError } from "@domain/errors/catalog-item.errors";
 import { EntityConflictError } from "@domain/errors/domain.error";
@@ -79,18 +78,5 @@ describe("GlobalExceptionFilter", () => {
     expect(body?.message).toBe("Erro interno");
     expect(JSON.stringify(body)).not.toContain("ECONNREFUSED");
     expect(logger.error).toHaveBeenCalledWith(expect.any(String), original);
-  });
-
-  it("fora do HTTP (RPC do RabbitMQ) delega ao filtro RPC do Nest", () => {
-    const rpcHost: Pick<ArgumentsHost, "getType"> = {
-      getType: <T extends string>() => "rpc" as T,
-    };
-
-    const result = new GlobalExceptionFilter(silentLogger()).catch(
-      new Error("TransportType nao encontrado"),
-      rpcHost as ArgumentsHost,
-    );
-
-    expect(isObservable(result)).toBe(true);
   });
 });

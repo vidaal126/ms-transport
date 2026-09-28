@@ -12,11 +12,6 @@ export const envSchema = z.object({
     .string()
     .regex(/^postgres(ql)?:\/\//, "deve ser uma URL postgresql://"),
 
-  RABBITMQ_URL: z
-    .string()
-    .regex(/^amqps?:\/\//, "deve ser uma URL amqp://")
-    .default("amqp://guest:guest@localhost:5672"),
-
   // Lista separada por virgula: "host1:9092,host2:9092".
   KAFKA_BROKER: z
     .string()
@@ -24,11 +19,20 @@ export const envSchema = z.object({
     .transform((value) => value.split(",").map((broker) => broker.trim()))
     .pipe(z.array(z.string().regex(/^[^\s:]+:\d+$/, "formato host:porta")).min(1)),
   KAFKA_CLIENT_ID: z.string().min(1).default("ms-transport"),
-  // Retry por mensagem com falha recuperavel (backoff exponencial do KafkaJS);
-  // esgotado, o consumer crasha e reinicia sozinho.
+  // Group do sync do catalogo. Sobrescrever so para replay com um group
+  // temporario (fixo por execucao, nunca aleatorio): o group principal segue
+  // intacto e a idempotencia torna o replay seguro.
+  CATALOG_SYNC_GROUP_ID: z
+    .string()
+    .regex(/^[A-Za-z0-9._-]{1,249}$/, "group id Kafka invalido")
+    .default("ms-transport.catalog-item-sync"),
+  // Falha recuperavel (banco, timeout, conexao): retry em processo com backoff
+  // exponencial e jitter, sem commitar. Esgotado, pausa a particao por
+  // CONSUMER_PAUSE_MS e retoma da mesma mensagem.
   CONSUMER_RETRY_RETRIES: z.coerce.number().int().min(0).default(5),
   CONSUMER_RETRY_INITIAL_MS: z.coerce.number().int().positive().default(300),
   CONSUMER_RETRY_MAX_MS: z.coerce.number().int().positive().default(30_000),
+  CONSUMER_PAUSE_MS: z.coerce.number().int().positive().default(30_000),
 
   THROTTLE_DEFAULT_TTL_MS: z.coerce.number().int().positive().default(60_000),
   THROTTLE_DEFAULT_LIMIT: z.coerce.number().int().positive().default(100),

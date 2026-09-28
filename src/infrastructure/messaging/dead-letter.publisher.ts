@@ -1,7 +1,11 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Kafka } from "kafkajs";
+import type {
+  DeadLetterPort,
+  DeadLetterReason,
+  DeadLetterSource,
+} from "@application/ports/dead-letter.port";
 import { type ILogger, LOGGER_TOKEN } from "@common/logger/logger.interface";
-import type { InboundMessage } from "./kafka-consumer.base";
 import { KafkaProducerService } from "./kafka-producer.service";
 import { KAFKA_CLIENT } from "./kafka.tokens";
 
@@ -16,14 +20,6 @@ export const DLT_HEADERS = {
   sourceTimestamp: "dlt-source-timestamp",
   failedAt: "dlt-failed-at",
 } as const;
-
-// Motivos de erro nao recuperavel: a mensagem nunca vai dar certo, entao vai
-// para a DLT e o offset e commitado.
-export type DeadLetterReason =
-  | "invalid_json"
-  | "schema_validation_failed"
-  | "unsupported_schema_version"
-  | "domain_invariant_violation";
 
 const MAX_DETAIL_LENGTH = 500;
 // A DLT guarda o que precisa de investigacao manual: nao pode expirar como a
@@ -44,7 +40,7 @@ export interface DeadLetterRecord {
 // Payload e headers originais intactos; headers dlt-* descrevem o motivo e a
 // posicao de origem para reprocessamento/inspecao.
 export function toDeadLetterRecord(
-  message: InboundMessage,
+  message: DeadLetterSource,
   reason: DeadLetterReason,
   detail: string,
   failedAt: Date,
@@ -67,7 +63,7 @@ export function toDeadLetterRecord(
 }
 
 @Injectable()
-export class DeadLetterPublisher {
+export class DeadLetterPublisher implements DeadLetterPort {
   constructor(
     private readonly producer: KafkaProducerService,
     @Inject(KAFKA_CLIENT) private readonly kafka: Kafka,
@@ -76,7 +72,7 @@ export class DeadLetterPublisher {
 
   // Falha aqui propaga: sem DLT gravada o offset nao pode ser commitado.
   async publish(
-    message: InboundMessage,
+    message: DeadLetterSource,
     reason: DeadLetterReason,
     detail: string,
   ): Promise<void> {

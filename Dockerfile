@@ -19,11 +19,11 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN yarn prisma generate && yarn build
 
-# ---- migrate: job de migrations + seed (usa devDependencies: prisma CLI) ----
+# ---- migrate: job de migrations (usa devDependencies: prisma CLI) -----------
 # Alvo separado para a imagem final levar so dependencias de producao.
 FROM builder AS migrate
 USER node
-CMD ["sh", "-c", "yarn --silent prisma migrate deploy && yarn --silent prisma db seed"]
+CMD ["yarn", "--silent", "prisma", "migrate", "deploy"]
 
 # ---- prod-deps: so dependencias de producao ---------------------------------
 # O Yarn 1 instala mesmo com --production as peerDependencies opcionais do

@@ -1,17 +1,15 @@
 import { type INestApplication, ValidationPipe } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { NestFactory } from "@nestjs/core";
-import { type MicroserviceOptions, Transport } from "@nestjs/microservices";
 import helmet from "helmet";
 import { Logger } from "nestjs-pino";
 import { type Env, readEnv } from "@config/env";
 import { AppModule } from "./app.module";
 
-const RABBITMQ_QUEUE = "transport_availability_queue";
 const SHUTDOWN_SIGNALS: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
 
-// Aplicacao hibrida: HTTP (leitura do read model e health checks) e o
-// microservico RabbitMQ de disponibilidade no mesmo processo.
+// HTTP (leitura do read model e health checks); o consumer Kafka sobe com o
+// ciclo de vida dos modulos.
 async function bootstrap(): Promise<void> {
   // abortOnError: false - erro de inicializacao (ex.: env invalida) sobe para
   // o catch de bootstrap, que imprime a mensagem e sai com codigo 1.
@@ -33,36 +31,18 @@ async function bootstrap(): Promise<void> {
   );
 
   const config = app.get<ConfigService<Env, true>>(ConfigService);
-  const rabbitmqUrl = readEnv(config, "RABBITMQ_URL");
   const port = readEnv(config, "PORT");
-
-  app.connectMicroservice<MicroserviceOptions>(
-    {
-      transport: Transport.RMQ,
-      options: {
-        urls: [rabbitmqUrl],
-        queue: RABBITMQ_QUEUE,
-        queueOptions: {
-          durable: false,
-        },
-      },
-    },
-    { inheritAppConfig: true },
-  );
 
   registerGracefulShutdown(app, readEnv(config, "SHUTDOWN_TIMEOUT_MS"));
 
-  await app.startAllMicroservices();
   await app.listen(port);
 
-  app
-    .get(Logger)
-    .log(`ms-transport: HTTP na porta ${port} e RabbitMQ na fila ${RABBITMQ_QUEUE}`);
+  app.get(Logger).log(`ms-transport: HTTP na porta ${port}`);
 }
 
 // Substitui app.enableShutdownHooks() para impor um teto de tempo: app.close()
 // dispara onModuleDestroy (consumer Kafka para e aguarda a mensagem em
-// andamento), fecha o microservico RabbitMQ e o servidor HTTP e so entao
+// andamento), fecha o servidor HTTP e so entao
 // onApplicationShutdown (desconecta producer e Prisma). Estourado o teto, o
 // processo sai com erro.
 function registerGracefulShutdown(app: INestApplication, timeoutMs: number): void {

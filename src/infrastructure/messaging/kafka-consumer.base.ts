@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import type { OnApplicationBootstrap, OnModuleDestroy } from "@nestjs/common";
 import type { Consumer, IHeaders, Kafka, KafkaMessage } from "kafkajs";
 import { runWithCorrelationId } from "@common/correlation/correlation-context";
@@ -6,11 +7,13 @@ import type { ILogger } from "@common/logger/logger.interface";
 import { EVENT_HEADERS } from "./event-envelope";
 
 export interface ConsumerRetryPolicy {
-  // Tentativas por mensagem (backoff exponencial do KafkaJS) antes de o
-  // consumer crashar e reiniciar.
+  // Novas tentativas por mensagem com falha recuperavel, em processo, antes de
+  // pausar a particao.
   readonly retries: number;
-  readonly initialRetryTimeMs: number;
-  readonly maxRetryTimeMs: number;
+  readonly initialDelayMs: number;
+  readonly maxDelayMs: number;
+  // Quanto tempo a particao fica pausada antes de retomar da mesma mensagem.
+  readonly pauseMs: number;
 }
 
 export interface ConsumerSubscription {
@@ -34,7 +37,8 @@ export interface InboundMessage {
 
 // starting: ainda nao entrou no grupo.
 // running: consumindo normalmente.
-// degraded: crashou (retry esgotado ou broker fora) e esta tentando voltar.
+// degraded: particao pausada por falha recuperavel persistente, ou consumer
+//   crashou (broker fora) e esta tentando voltar.
 // stopped: desligado no shutdown.
 export type ConsumerStatus = "starting" | "running" | "degraded" | "stopped";
 
@@ -48,9 +52,16 @@ const MAX_START_BACKOFF_MS = 30_000;
 const START_BACKOFF_BASE_MS = 1_000;
 
 // Base para consumers: conexao, subscribe, contexto de log com correlationId,
-// estado para health check, recuperacao automatica e desligamento. Politica
-// de erro por mensagem (DLT vs retry) fica no handler concreto: lancar erro
-// = nao commitar e reprocessar.
+// commit manual, retry/pausa, estado para health check, recuperacao
+// automatica e desligamento.
+//
+// Contrato do handler concreto:
+// - resolver = mensagem tratada (persistida, enviada para a DLT com ack, ou
+//   duplicata) => commit de offset + 1;
+// - lancar = falha recuperavel => nada e commitado; retry em processo com
+//   backoff exponencial e jitter; esgotado, seek de volta para a mensagem e
+//   pausa da particao por pauseMs. Nunca pula mensagem e nunca deixa o erro
+//   chegar ao KafkaJS (que crasharia e reiniciaria o consumer em loop).
 export abstract class KafkaConsumerBase
   implements OnApplicationBootstrap, OnModuleDestroy
 {
@@ -59,6 +70,8 @@ export abstract class KafkaConsumerBase
   private isStopping = false;
   private startTimer: NodeJS.Timeout | null = null;
   private startAttempt: Promise<void> | null = null;
+  private readonly shutdown = new AbortController();
+  private readonly resumeTimers = new Set<NodeJS.Timeout>();
 
   protected constructor(
     private readonly kafka: Kafka,
@@ -83,9 +96,12 @@ export abstract class KafkaConsumerBase
     return this.health;
   }
 
-  // disconnect para o fetch e aguarda o eachMessage em andamento terminar.
+  // Interrompe o backoff em andamento (a mensagem fica sem commit e volta no
+  // proximo start); disconnect para o fetch e aguarda o eachMessage terminar.
   async onModuleDestroy(): Promise<void> {
     this.isStopping = true;
+    this.shutdown.abort();
+    this.clearResumeTimers();
     if (this.startTimer) clearTimeout(this.startTimer);
     await this.startAttempt;
     await this.consumer?.disconnect();
@@ -110,11 +126,8 @@ export abstract class KafkaConsumerBase
     const consumer = this.kafka.consumer({
       groupId,
       retry: {
-        retries: retry.retries,
-        initialRetryTime: retry.initialRetryTimeMs,
-        maxRetryTime: retry.maxRetryTimeMs,
-        // Esgotado o retry, o KafkaJS crasha o consumer e o reinicia (o
-        // offset da mensagem com falha nao foi commitado: ela volta).
+        // So erros do proprio KafkaJS (broker, rebalance) chegam aqui: falha
+        // de processamento de mensagem e tratada em handleMessage.
         restartOnFailure: async (): Promise<boolean> => true,
       },
     });
@@ -141,17 +154,16 @@ export abstract class KafkaConsumerBase
       await consumer.connect();
       await consumer.subscribe({ topics: [...topics], fromBeginning });
 
-      // autoCommit so resolve o offset depois que eachMessage retorna: erro
-      // lancado pelo handler => offset nao commitado => KafkaJS reprocessa.
+      // autoCommit desligado: o unico commit e o explicito em handleMessage,
+      // feito depois da persistencia (ou do ack da DLT, ou da duplicata).
       await consumer.run({
-        autoCommit: true,
-        eachMessage: async ({ topic, partition, message }): Promise<void> => {
+        autoCommit: false,
+        eachMessage: async ({ topic, partition, message, heartbeat, pause }): Promise<void> => {
           const inbound = toInboundMessage(topic, partition, message);
           await runWithCorrelationId(
             resolveCorrelationId(inbound.headers[EVENT_HEADERS.correlationId]),
-            () => this.handle(inbound),
+            () => this.handleMessage(consumer, inbound, retry, heartbeat, pause),
           );
-          if (this.health.status !== "running") this.setStatus("running");
         },
       });
     } catch (err) {
@@ -165,7 +177,91 @@ export abstract class KafkaConsumerBase
     }
   }
 
+  private async handleMessage(
+    consumer: Consumer,
+    message: InboundMessage,
+    retry: ConsumerRetryPolicy,
+    heartbeat: () => Promise<void>,
+    pause: () => () => void,
+  ): Promise<void> {
+    const position = {
+      topic: message.topic,
+      partition: message.partition,
+      offset: message.offset,
+    };
+
+    const result = await processWithRetry(() => this.handle(message), {
+      policy: retry,
+      heartbeat,
+      sleep: (ms) => this.interruptibleSleep(ms),
+      onRetry: (attempt, delayMs, error) => {
+        this.logger.warn("Falha recuperavel; nova tentativa sem commit", {
+          ...position,
+          attempt,
+          delayMs,
+          error: error.message,
+        });
+      },
+    });
+
+    switch (result.outcome) {
+      case "handled":
+        await consumer.commitOffsets([
+          { topic: message.topic, partition: message.partition, offset: nextOffset(message.offset) },
+        ]);
+        if (this.health.status !== "running") this.setStatus("running");
+        return;
+      case "exhausted": {
+        // seek antes de retornar: o KafkaJS resolve o offset localmente quando
+        // eachMessage retorna, e o seek pendente sobrepoe isso no proximo
+        // fetch (com autoCommit desligado, seek nao commita nada).
+        consumer.seek({ topic: message.topic, partition: message.partition, offset: message.offset });
+        const resume = pause();
+        this.scheduleResume(resume, retry.pauseMs, position);
+        this.logger.error("Retry esgotado; particao pausada sem commit", result.error, {
+          ...position,
+          pauseMs: retry.pauseMs,
+        });
+        this.setStatus("degraded", result.error.message);
+        return;
+      }
+      case "interrupted":
+        // Shutdown durante o backoff: sem commit, a mensagem volta no proximo start.
+        return;
+    }
+  }
+
+  private scheduleResume(
+    resume: () => void,
+    delayMs: number,
+    position: { topic: string; partition: number; offset: string },
+  ): void {
+    const timer = setTimeout((): void => {
+      this.resumeTimers.delete(timer);
+      if (this.isStopping) return;
+      this.logger.log("Retomando particao pausada", position);
+      resume();
+    }, delayMs);
+    this.resumeTimers.add(timer);
+  }
+
+  private clearResumeTimers(): void {
+    for (const timer of this.resumeTimers) clearTimeout(timer);
+    this.resumeTimers.clear();
+  }
+
+  // false = interrompido pelo shutdown.
+  private async interruptibleSleep(ms: number): Promise<boolean> {
+    try {
+      await sleep(ms, undefined, { signal: this.shutdown.signal });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private async recreate(attempt: number): Promise<void> {
+    this.clearResumeTimers();
     const previous = this.consumer;
     this.consumer = null;
     await previous?.disconnect().catch((): void => undefined);
@@ -180,6 +276,60 @@ export abstract class KafkaConsumerBase
 
 function startBackoffMs(attempt: number): number {
   return Math.min(START_BACKOFF_BASE_MS * 2 ** attempt, MAX_START_BACKOFF_MS);
+}
+
+export function nextOffset(offset: string): string {
+  return (BigInt(offset) + 1n).toString();
+}
+
+// Backoff exponencial com "equal jitter": metade fixa garante espera minima,
+// metade aleatoria espalha as retentativas de replicas diferentes.
+export function retryDelayMs(
+  attempt: number,
+  policy: Pick<ConsumerRetryPolicy, "initialDelayMs" | "maxDelayMs">,
+  random: () => number = Math.random,
+): number {
+  const exponential = Math.min(policy.initialDelayMs * 2 ** (attempt - 1), policy.maxDelayMs);
+  const half = exponential / 2;
+  return Math.round(half + random() * half);
+}
+
+export type RetryResult =
+  | { readonly outcome: "handled" }
+  | { readonly outcome: "exhausted"; readonly error: Error }
+  | { readonly outcome: "interrupted" };
+
+export interface RetryOptions {
+  readonly policy: Pick<ConsumerRetryPolicy, "retries" | "initialDelayMs" | "maxDelayMs">;
+  readonly heartbeat: () => Promise<void>;
+  // false = interrompido (shutdown).
+  readonly sleep: (ms: number) => Promise<boolean>;
+  readonly onRetry: (attempt: number, delayMs: number, error: Error) => void;
+  readonly random?: () => number;
+}
+
+// 1 tentativa + policy.retries novas tentativas. Nunca lanca.
+export async function processWithRetry(
+  handle: () => Promise<void>,
+  options: RetryOptions,
+): Promise<RetryResult> {
+  const { policy } = options;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await handle();
+      return { outcome: "handled" };
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      if (attempt >= policy.retries) return { outcome: "exhausted", error };
+
+      const delayMs = retryDelayMs(attempt + 1, policy, options.random);
+      options.onRetry(attempt + 1, delayMs, error);
+      // Heartbeat antes de esperar: o backoff nao pode estourar a sessao do
+      // grupo e provocar rebalance.
+      await options.heartbeat();
+      if (!(await options.sleep(delayMs))) return { outcome: "interrupted" };
+    }
+  }
 }
 
 export function toInboundMessage(

@@ -121,7 +121,32 @@ describe("ms-transport: sincronizacao do read model (integracao)", () => {
     const after = await prisma.catalogItem.findUniqueOrThrow({ where: { itemId: BOX_001_ID } });
     expect(after.updatedAt).toEqual(before.updatedAt);
     expect(after.sourceEventId).toBe(before.sourceEventId);
-    // So o marcador entrou em processed_events.
+    // v1 nao tem eventId: o id e UUID v5 da posicao, entao o reenvio (outro
+    // offset) e registrado como evento novo e descartado como stale pelo guard
+    // de sourceOccurredAt. Entram o reenvio e o marcador.
+    expect(await countProcessed()).toBe(processedBefore + 2);
+  });
+
+  it("reenviar o mesmo envelope v2 (mesmo eventId) e duplicata: nada muda", async () => {
+    const itemId = "11111111-1111-4111-8111-000000000002";
+    const event = envelopeV2({ itemId, sku: "DUP-1", occurredAt: "2026-09-11T00:00:00.000Z", weightKg: 2 });
+    await kafka.produce(CATALOG_TOPIC, [event]);
+    await waitFor("primeira entrega aplicada", async () =>
+      (await prisma.catalogItem.findUnique({ where: { itemId } })) !== null,
+    );
+    const before = await prisma.catalogItem.findUniqueOrThrow({ where: { itemId } });
+    const processedBefore = await countProcessed();
+
+    await kafka.produce(CATALOG_TOPIC, [event]);
+    const marker = envelopeV2({ itemId: "11111111-1111-4111-8111-000000000003", sku: "MARKER-2", occurredAt: "2026-09-12T00:00:00.000Z", weightKg: 1 });
+    await kafka.produce(CATALOG_TOPIC, [marker]);
+    await waitFor("marcador processado", async () =>
+      (await prisma.catalogItem.findUnique({ where: { itemId: "11111111-1111-4111-8111-000000000003" } })) !== null,
+    );
+
+    const after = await prisma.catalogItem.findUniqueOrThrow({ where: { itemId } });
+    expect(after.updatedAt).toEqual(before.updatedAt);
+    // So o marcador entrou: o reenvio bateu na PK de processed_events.
     expect(await countProcessed()).toBe(processedBefore + 1);
   });
 

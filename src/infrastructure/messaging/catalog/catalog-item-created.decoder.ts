@@ -1,14 +1,26 @@
-import { createHash } from "node:crypto";
+import { v5 as uuidv5 } from "uuid";
 import { z } from "zod";
-import type { CatalogItemEvent } from "@application/use-cases/sync-catalog-item.use-case";
-import type { DeadLetterReason } from "@infrastructure/messaging/dead-letter.publisher";
+import type { DeadLetterReason } from "@application/ports/dead-letter.port";
+import type { CatalogItemEvent } from "@application/ports/sync-catalog-item.port";
 
 export const ITEM_CREATED_EVENT_TYPE = "ItemCreated";
 const SUPPORTED_ENVELOPE_VERSION = 2;
 const SUPPORTED_LEGACY_VERSION = 1;
 
+// Namespace fixo do ms-transport para derivar eventIds de eventos v1. Nunca
+// mudar: mudaria o id de todos os eventos legados ja processados.
+export const LEGACY_EVENT_ID_NAMESPACE = "0b7c5f2e-4a51-4d0c-9e7a-3f1d8c6b2a90";
+
+// Posicao da mensagem no Kafka: identifica um evento v1, que nao tem eventId.
+export interface MessagePosition {
+  readonly topic: string;
+  readonly partition: number;
+  readonly offset: string;
+}
+
 const payloadSchema = z.object({
-  id: z.string().min(1),
+  // O ms-catalog sempre gerou UUID; o GET /catalog-items/:itemId so aceita UUID.
+  id: z.uuid(),
   sku: z.string().min(1),
   weightKg: z.number(),
   dimensions: z.object({
@@ -56,7 +68,10 @@ export type DecodeResult =
 // Eventos legados sem schemaVersion nao tem peso/dimensoes e nao ha dado
 // para um upcaster reconstruir: unsupported_schema_version (limitacao
 // conhecida).
-export function decodeCatalogItemCreated(raw: Buffer | null): DecodeResult {
+export function decodeCatalogItemCreated(
+  raw: Buffer | null,
+  position: MessagePosition,
+): DecodeResult {
   if (raw === null || raw.length === 0) {
     return fail("invalid_json", "mensagem vazia");
   }
@@ -70,7 +85,7 @@ export function decodeCatalogItemCreated(raw: Buffer | null): DecodeResult {
 
   return hasTopLevelVersionSchema.safeParse(parsed).success
     ? decodeEnvelopeV2(parsed)
-    : decodeLegacy(parsed);
+    : decodeLegacy(parsed, position);
 }
 
 function decodeEnvelopeV2(parsed: unknown): DecodeResult {
@@ -91,7 +106,7 @@ function decodeEnvelopeV2(parsed: unknown): DecodeResult {
     : decoded;
 }
 
-function decodeLegacy(parsed: unknown): DecodeResult {
+function decodeLegacy(parsed: unknown, position: MessagePosition): DecodeResult {
   const envelope = legacyEnvelopeSchema.safeParse(parsed);
   if (!envelope.success) return schemaFailure(envelope.error);
 
@@ -112,20 +127,18 @@ function decodeLegacy(parsed: unknown): DecodeResult {
   const payload = payloadSchema.safeParse(envelope.data.payload);
   if (!payload.success) return schemaFailure(payload.error);
 
-  return toEvent(legacyEventId(envelope.data), envelope.data, payload.data);
+  return toEvent(legacyEventId(position), envelope.data, payload.data);
 }
 
-// v1 nao tem eventId: deriva um id deterministico do conteudo que identifica
-// o evento, estavel entre republicacoes do outbox e reenvios manuais.
-export function legacyEventId(envelope: {
-  readonly eventType: string;
-  readonly aggregateId: string;
-  readonly occurredAt: string;
-}): string {
-  const digest = createHash("sha256")
-    .update(`${envelope.eventType}|${envelope.aggregateId}|${envelope.occurredAt}`)
-    .digest("hex");
-  return `v1:${digest}`;
+// v1 nao tem eventId: UUID v5 sobre topico+particao+offset. Deterministico
+// para a mesma mensagem (replay e seguro), mas o mesmo evento republicado em
+// outro offset ganha outro id; nesse caso a protecao e o guard de
+// sourceOccurredAt no upsert (limitacao documentada).
+export function legacyEventId(position: MessagePosition): string {
+  return uuidv5(
+    `${position.topic}:${position.partition}:${position.offset}`,
+    LEGACY_EVENT_ID_NAMESPACE,
+  );
 }
 
 function toEvent(

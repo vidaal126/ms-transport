@@ -1,58 +1,87 @@
 # ms-transport
 
-Microsserviço de transporte (NestJS, Prisma, PostgreSQL). Roda como aplicação
-híbrida:
+Microsserviço de transporte (NestJS, Prisma, PostgreSQL, Kafka):
 
-- **HTTP**: leitura do read model de itens do catálogo e health checks.
-- **RabbitMQ**: RPC `check_transport_availability` na fila
-  `transport_availability_queue` (disponibilidade de `TransportType`).
 - **Kafka**: consumer de `catalog.ItemCreated` que mantém o read model
   `catalog_items` com o que transporte precisa de cada item (peso e dimensões).
+- **HTTP**: leitura do read model e health checks.
 
 ## Arquitetura
 
+Camadas hexagonais, com dependências apontando para dentro:
+
 - `src/domain`: `CatalogItem` (mesmas invariantes físicas do ms-catalog),
-  `TransportType`, value object `Dimensions`, erros de domínio e ports de
-  repositório.
-- `src/application`: use cases `SyncCatalogItem` (entrada do evento) e
-  `GetCatalogItem`.
+  value object `Dimensions` e erros de domínio. Não depende de Nest, Prisma nem
+  Kafka.
+- `src/application`: use cases `SyncCatalogItem` e `GetCatalogItem`, sem
+  dependência de Nest, e os ports em `application/ports`:
+  - `SyncCatalogItemPort`: port de entrada, recebe o evento já decodificado;
+  - `ICatalogItemRepository`: port do read model;
+  - `DeadLetterPort`: publicação na DLT.
 - `src/infrastructure`: adapter Kafka (decoder Zod, consumer, DLT), adapter
-  Prisma, HTTP, RabbitMQ e health checks. `MessagingModule` é uma cópia do
-  mesmo módulo do ms-catalog.
+  Prisma, HTTP e health checks. A composição dos use cases fica em
+  `CatalogSyncModule` (`useFactory`). `MessagingModule` é próprio deste
+  serviço: nenhum código é compartilhado com o ms-catalog; o contrato é o
+  formato do evento.
 
 ### Consumo de `catalog.ItemCreated`
 
-- Grupo `ms-transport.catalog-items` com `fromBeginning`: um grupo novo
-  reconstrói o read model a partir do histórico do tópico.
-- Aceita o envelope v2 (`schemaVersion` no topo) e o formato v1 antigo
-  (`schemaVersion: 1` no payload). Eventos v1 não têm `eventId`: é derivado de
-  forma determinística (`v1:` + sha256 de `eventType|aggregateId|occurredAt`),
-  então reenvios são detectados.
-- **Idempotência**: o `eventId` entra em `processed_events` e o item é
-  gravado em `catalog_items` na mesma transação. Evento já processado é
-  ignorado (log em debug) e o offset é commitado.
+- **Consumer group** `ms-transport.catalog-item-sync` (`CATALOG_SYNC_GROUP_ID`),
+  com `fromBeginning: true`: sem offset commitado, lê o tópico inteiro e
+  constrói o read model. O group id é fixo; nunca é gerado a cada start.
+- **Formatos aceitos** (migração expand/contract):
+  - envelope v2: `eventId`, `eventType`, `schemaVersion`, `occurredAt`,
+    `aggregateId`, `correlationId` e `payload`;
+  - v1 antigo: `schemaVersion: 1` dentro do payload, sem `eventId`.
+- **eventId de eventos v1**: UUID v5 sobre `tópico:partição:offset`, com um
+  namespace fixo do serviço. É determinístico para a mesma mensagem, então o
+  replay é seguro (veja as limitações).
+- **Idempotência**: o `eventId` entra em `processed_events` e o item é gravado
+  em `catalog_items` na mesma transação. Evento já processado bate na PK de
+  `processed_events`: é ignorado, logado em debug e o offset é commitado.
 - **Reordenação**: o upsert só sobrescreve se o `occurredAt` do evento for
-  mais recente que o do registro gravado.
-- **Offset**: commitado pelo KafkaJS só depois de o processamento terminar.
+  mais recente que o `sourceOccurredAt` gravado. Evento mais antigo ou igual é
+  registrado como processado e descartado (`stale`).
+- **Commit de offset**: `autoCommit: false`. O único commit é o explícito de
+  `offset + 1`, feito somente depois de um destes:
+  - commit da transação Prisma;
+  - ack da publicação na DLT;
+  - detecção de duplicata.
+
+  Nenhum caminho commita antes da persistência.
+- **correlationId**: o do envelope vai para os logs do processamento. Sem
+  envelope v2, vale o header `correlationId` da mensagem, ou um gerado.
 
 ### Erros
 
 | Tipo | Exemplos | Tratamento |
 |---|---|---|
-| Não recuperável | JSON inválido, schema Zod, `schemaVersion` não suportada, invariante de domínio | publica em `catalog.ItemCreated.DLT` com o payload original e commita o offset |
-| Recuperável | banco fora, timeout, erro não classificado | não commita; retry exponencial (`CONSUMER_RETRY_*`); esgotado, o consumer crasha, loga em error, fica degradado no readiness e reinicia sozinho |
+| Não recuperável | JSON inválido, schema Zod, `schemaVersion` não suportada, invariante de domínio, evento legado sem peso e dimensões, dado rejeitado pelo banco (SQLSTATE classe 22 ou 23, por exemplo CHECK) | publica em `catalog.ItemCreated.DLT` com os bytes originais; commita o offset só depois do ack da DLT |
+| Recuperável | banco indisponível, timeout, erro de conexão, erro não classificado | não commita e não manda para a DLT; retry em processo (veja abaixo) |
+
+Retry de erro recuperável:
+
+1. Nova tentativa com backoff exponencial e jitter, com heartbeat entre as
+   tentativas. Limite em `CONSUMER_RETRY_RETRIES`.
+2. Esgotado o limite, o consumer faz `seek` de volta para a mesma mensagem e
+   pausa a partição (`consumer.pause`). O readiness fica `down`.
+3. Depois de `CONSUMER_PAUSE_MS`, a partição é retomada a partir da mesma
+   mensagem, e o ciclo recomeça se o erro persistir.
+
+O erro nunca chega ao KafkaJS: não há crash-loop do consumer e nenhuma mensagem
+é pulada por erro transitório. Um SIGTERM durante o backoff interrompe a espera
+sem commit; a mensagem volta no próximo start.
 
 Headers da DLT: `dlt-reason`, `dlt-detail`, `dlt-source-topic`,
 `dlt-source-partition`, `dlt-source-offset`, `dlt-source-timestamp` e
-`dlt-failed-at`, além dos headers originais. A DLT é criada com retenção
-infinita se ainda não existir.
+`dlt-failed-at`, além dos headers originais.
 
 ## Como subir
 
 ### Com o ms-catalog (recomendado)
 
 O `docker-compose.yml` do **ms-catalog** sobe os dois serviços e toda a
-infraestrutura (Kafka, os dois Postgres, RabbitMQ). Veja o README de lá:
+infraestrutura (Kafka, os dois Postgres, Kafka UI). Veja o README de lá:
 
 ```bash
 cd ../ms-catalog && docker compose up -d --build
@@ -62,14 +91,13 @@ O ms-transport fica em http://localhost:3001.
 
 ### No host
 
-Com a infraestrutura do compose do ms-catalog no ar (ou o
-`docker-compose.yml` deste repositório para Postgres e RabbitMQ, mais um Kafka):
+Com a infraestrutura do compose do ms-catalog no ar
+(`docker compose up -d catalog-db transport-db kafka kafka-init kafka-ui`):
 
 ```bash
 cp .env.example .env
 corepack yarn@1.22.22 install
 npx prisma migrate deploy
-npx prisma db seed   # tipos de transporte
 corepack yarn@1.22.22 start
 ```
 
@@ -83,13 +111,14 @@ Validadas com Zod no bootstrap; a aplicação não sobe com env inválida.
 |---|---|---|
 | `DATABASE_URL` | obrigatória | URL `postgresql://` |
 | `KAFKA_BROKER` | obrigatória | lista `host:porta`; `localhost:9092` no host, `kafka:29092` em container |
-| `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672` | URL `amqp://` |
 | `NODE_ENV` | `development` | `production` desliga o pino-pretty |
 | `PORT` | `3001` | porta HTTP (8080 na imagem Docker) |
 | `LOG_LEVEL` | `info` | nível do Pino |
 | `KAFKA_CLIENT_ID` | `ms-transport` | client id do KafkaJS |
-| `CONSUMER_RETRY_RETRIES` | `5` | tentativas por mensagem antes do crash e restart |
-| `CONSUMER_RETRY_INITIAL_MS` / `CONSUMER_RETRY_MAX_MS` | `300` / `30000` | backoff exponencial |
+| `CATALOG_SYNC_GROUP_ID` | `ms-transport.catalog-item-sync` | consumer group do sync; sobrescreva só para replay com group temporário |
+| `CONSUMER_RETRY_RETRIES` | `5` | novas tentativas por mensagem antes de pausar a partição |
+| `CONSUMER_RETRY_INITIAL_MS` / `CONSUMER_RETRY_MAX_MS` | `300` / `30000` | backoff exponencial com jitter |
+| `CONSUMER_PAUSE_MS` | `30000` | tempo de pausa da partição antes de retomar |
 | `THROTTLE_DEFAULT_TTL_MS` / `THROTTLE_DEFAULT_LIMIT` | `60000` / `100` | rate limit HTTP |
 | `HEALTH_CHECK_TIMEOUT_MS` | `1500` | timeout de cada checagem do readiness |
 | `SHUTDOWN_TIMEOUT_MS` | `10000` | teto do graceful shutdown |
@@ -99,15 +128,24 @@ Validadas com Zod no bootstrap; a aplicação não sobe com env inválida.
 | Método | Rota | Descrição |
 |---|---|---|
 | `GET` | `/catalog-items/:itemId` | item do read model (400 se não for UUID, 404 se não existir) |
-| `GET` | `/health/live` | liveness |
-| `GET` | `/health/ready` | readiness: banco, broker Kafka, consumer (down enquanto degradado) e RabbitMQ |
+| `GET` | `/health/live` | liveness: não checa dependências |
+| `GET` | `/health/ready` | readiness: banco, broker Kafka e consumer (down com a partição pausada ou o consumer degradado) |
 
-## Tópicos
+## Tópicos e consumer groups
 
 | Tópico | Papel |
 |---|---|
 | `catalog.ItemCreated` | consumido (publicado pelo ms-catalog) |
-| `catalog.ItemCreated.DLT` | publicado: mensagens não recuperáveis |
+| `catalog.ItemCreated.DLT` | publicado: mensagens não recuperáveis, retenção infinita |
+
+| Consumer group | Uso |
+|---|---|
+| `ms-transport.catalog-item-sync` | principal, mantém o read model |
+| valor de `CATALOG_SYNC_GROUP_ID` | replay com group temporário |
+
+O broker do compose roda com auto-create desligado: os dois tópicos vêm do
+`kafka-init`. Rodando fora do compose, o ms-transport cria a DLT pelo admin do
+KafkaJS se ela não existir; o tópico de eventos precisa existir.
 
 ### Inspecionar a DLT
 
@@ -118,17 +156,38 @@ docker exec catalog-kafka kafka-console-consumer --bootstrap-server localhost:29
   --topic catalog.ItemCreated.DLT --from-beginning --property print.headers=true
 ```
 
-### Reconstruir o read model
+O header `dlt-reason` diz o motivo, e `dlt-source-*` a posição de origem.
 
-Os offsets do grupo ficam no Kafka, não no banco. Para reconstruir o read model
-(por exemplo depois de recriar o banco), pare o ms-transport e volte o grupo ao
-início:
+### Replay
+
+Os offsets do group ficam no Kafka, não no banco. A idempotência torna o replay
+seguro: evento já processado vira duplicata e evento mais antigo que o gravado
+é descartado.
+
+**Opção 1: resetar o group principal.** Pare o ms-transport antes: o reset
+falha com o group ativo.
 
 ```bash
 docker exec catalog-kafka kafka-consumer-groups --bootstrap-server localhost:29092 \
-  --group ms-transport.catalog-items --topic catalog.ItemCreated \
+  --group ms-transport.catalog-item-sync --topic catalog.ItemCreated \
   --reset-offsets --to-earliest --execute
 ```
+
+**Opção 2: group temporário.** Suba uma instância com um group novo e fixo; o
+group principal não é tocado:
+
+```bash
+CATALOG_SYNC_GROUP_ID=ms-transport.catalog-item-sync.replay-20260923 corepack yarn@1.22.22 start
+```
+
+Quando terminar, apague o group temporário:
+
+```bash
+docker exec catalog-kafka kafka-consumer-groups --bootstrap-server localhost:29092 \
+  --delete --group ms-transport.catalog-item-sync.replay-20260923
+```
+
+Para acompanhar o progresso: `kafka-consumer-groups --describe --group <group>`.
 
 ## Testes
 
@@ -138,22 +197,35 @@ corepack yarn@1.22.22 test:integration  # Postgres e Kafka reais (testcontainers
 ```
 
 A suíte de integração publica a massa do tópico (2 eventos legados, 1 mensagem
-inválida, BOX-001 em v1) e verifica o replay (1 item, 3 mensagens na DLT),
-reenvio sem duplicar, proteção contra reordenação e poison message para a DLT.
-O teste ponta a ponta (catálogo -> read model) fica no ms-catalog
-(`yarn test:e2e`).
+inválida e BOX-001 em v1) e verifica:
+
+- o replay (1 item e 3 mensagens na DLT);
+- reenvio de v1 e de v2 sem duplicar;
+- proteção contra reordenação;
+- poison message indo para a DLT.
+
+Os testes unitários cobrem commit, retry, pausa e retomada do consumer com um
+consumer KafkaJS falso. O teste ponta a ponta (catálogo -> read model) fica no
+ms-catalog (`yarn test:e2e`).
 
 ## Limitações conhecidas
 
 - **Eventos legados sem peso e dimensões** (anteriores ao `schemaVersion: 1`)
   não têm dado para um upcaster reconstruir: vão para a DLT com
   `unsupported_schema_version`.
+- **eventId de v1 depende da posição**: o mesmo evento v1 republicado em outro
+  offset ganha outro `eventId` e não é tratado como duplicata. Ele entra em
+  `processed_events`, mas o guard de `sourceOccurredAt` impede que altere o
+  item.
 - **Replay republica na DLT** as mensagens não recuperáveis que já estavam lá:
   a DLT acumula cópias de uma mesma mensagem.
-- **Recriar só o banco não reconstrói o read model**: os offsets do grupo
-  continuam no Kafka (veja "Reconstruir o read model").
+- **Entrega at-least-once**: se o commit do offset falhar depois da persistência
+  (por exemplo, num rebalance), a mensagem é reprocessada e cai como duplicata.
+  Se o commit falhar depois da DLT, a DLT recebe uma cópia a mais.
+- **Recriar só o banco não reconstrói o read model**: os offsets do group
+  continuam no Kafka (veja "Replay").
 - **Erro não classificado é tratado como recuperável**: nunca perde evento, mas
-  um erro permanente trava a partição até intervenção (consumer degradado no
-  readiness e crash logado em error).
+  um erro permanente mantém a partição em ciclos de pausa e retomada até haver
+  intervenção. O readiness fica `down` e cada ciclo é logado em error.
 - **Invariantes duplicadas**: as regras de peso e dimensões são uma cópia das
   do ms-catalog; mudanças lá precisam ser replicadas aqui.

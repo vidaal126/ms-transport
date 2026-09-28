@@ -3,7 +3,7 @@ import type {
   ICatalogItemRepository,
   SourceEvent,
   SyncOutcome,
-} from "@domain/repositories/catalog-item.repository";
+} from "@application/ports/catalog-item.repository.port";
 
 // Mesma semantica do adapter Prisma, em memoria.
 export class InMemoryCatalogItemRepository implements ICatalogItemRepository {

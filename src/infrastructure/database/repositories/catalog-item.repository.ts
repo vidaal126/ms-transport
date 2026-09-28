@@ -1,11 +1,13 @@
 import { Injectable } from "@nestjs/common";
 import type { CatalogItem as CatalogItemModel } from "@infrastructure/database/generated/client";
 import { CatalogItem } from "@domain/entities/catalog-item.entity";
+import { InvalidCatalogItemError } from "@domain/errors/catalog-item.errors";
 import type {
   ICatalogItemRepository,
   SourceEvent,
   SyncOutcome,
-} from "@domain/repositories/catalog-item.repository";
+} from "@application/ports/catalog-item.repository.port";
+import { isIntegrityViolation } from "@infrastructure/database/prisma/integrity-violation";
 import { PrismaService } from "@infrastructure/database/prisma/prisma.service";
 
 @Injectable()
@@ -18,7 +20,25 @@ export class CatalogItemRepositoryPrisma implements ICatalogItemRepository {
     return this.toDomain(found);
   }
 
+  // Dado rejeitado pelo banco (CHECK, range, NOT NULL) vira erro de dominio:
+  // o evento nunca vai ser aceito. Demais erros propagam como estao.
   async syncFromEvent(item: CatalogItem, event: SourceEvent): Promise<SyncOutcome> {
+    try {
+      return await this.applyInTransaction(item, event);
+    } catch (err) {
+      if (isIntegrityViolation(err)) {
+        throw new InvalidCatalogItemError(
+          `read model rejeitou o item ${item.itemId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  private async applyInTransaction(
+    item: CatalogItem,
+    event: SourceEvent,
+  ): Promise<SyncOutcome> {
     return this.prisma.$transaction(async (tx) => {
       // ON CONFLICT DO NOTHING na PK: count 0 = eventId ja processado.
       const registered = await tx.processedEvent.createMany({

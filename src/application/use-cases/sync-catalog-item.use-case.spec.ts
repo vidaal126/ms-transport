@@ -1,6 +1,7 @@
 import { InvariantViolationError } from "@domain/errors/domain.error";
 import { InMemoryCatalogItemRepository } from "../../test/catalog-item.fakes";
-import { type CatalogItemEvent, SyncCatalogItemUseCase } from "./sync-catalog-item.use-case";
+import type { CatalogItemEvent } from "@application/ports/sync-catalog-item.port";
+import { SyncCatalogItemUseCase } from "./sync-catalog-item.use-case";
 
 const event: CatalogItemEvent = {
   eventId: "evt-1",

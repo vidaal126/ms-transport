@@ -4,30 +4,31 @@ import type { Kafka } from "kafkajs";
 import { runWithCorrelationId } from "@common/correlation/correlation-context";
 import { type ILogger, LOGGER_TOKEN } from "@common/logger/logger.interface";
 import { type Env, readEnv } from "@config/env";
+import { DEAD_LETTER_PORT, type DeadLetterPort } from "@application/ports/dead-letter.port";
+import {
+  type CatalogItemEvent,
+  SYNC_CATALOG_ITEM,
+  type SyncCatalogItemPort,
+} from "@application/ports/sync-catalog-item.port";
 import { InvariantViolationError } from "@domain/errors/domain.error";
-import { DeadLetterPublisher } from "@infrastructure/messaging/dead-letter.publisher";
 import {
   type ConsumerSubscription,
   type InboundMessage,
   KafkaConsumerBase,
 } from "@infrastructure/messaging/kafka-consumer.base";
 import { KAFKA_CLIENT } from "@infrastructure/messaging/kafka.tokens";
-import {
-  type CatalogItemEvent,
-  SyncCatalogItemUseCase,
-} from "@application/use-cases/sync-catalog-item.use-case";
 import { decodeCatalogItemCreated } from "./catalog-item-created.decoder";
 
 export const CATALOG_ITEM_CREATED_TOPIC = "catalog.ItemCreated";
-// Grupo novo com fromBeginning: o read model e construido a partir do
-// historico do topico (replay).
-export const CATALOG_ITEMS_GROUP_ID = "ms-transport.catalog-items";
-
 // Adapter de entrada: classifica o resultado de cada mensagem.
 // - nao recuperavel (JSON invalido, schema, versao nao suportada, invariante
-//   de dominio): DLT com payload original e retorna => offset commitado;
-// - recuperavel (banco, timeout, qualquer erro nao classificado): lanca =>
-//   offset nao commitado, retry do KafkaJS e, esgotado, restart do consumer.
+//   de dominio, incluindo dado rejeitado pelo banco): DLT com payload
+//   original e retorna => offset commitado depois do ack da DLT;
+// - recuperavel (banco, timeout, conexao, qualquer erro nao classificado):
+//   lanca => sem commit; a base faz retry com backoff e depois pausa a
+//   particao. Nunca pula a mensagem.
+// Group (CATALOG_SYNC_GROUP_ID) com fromBeginning: sem offset commitado, le o
+// topico inteiro e constroi o read model.
 @Injectable()
 export class CatalogItemCreatedConsumer extends KafkaConsumerBase {
   protected readonly subscription: ConsumerSubscription;
@@ -35,19 +36,20 @@ export class CatalogItemCreatedConsumer extends KafkaConsumerBase {
   constructor(
     @Inject(KAFKA_CLIENT) kafka: Kafka,
     @Inject(LOGGER_TOKEN) logger: ILogger,
-    private readonly syncCatalogItem: SyncCatalogItemUseCase,
-    private readonly deadLetter: DeadLetterPublisher,
+    @Inject(SYNC_CATALOG_ITEM) private readonly syncCatalogItem: SyncCatalogItemPort,
+    @Inject(DEAD_LETTER_PORT) private readonly deadLetter: DeadLetterPort,
     config: ConfigService<Env, true>,
   ) {
     super(kafka, logger);
     this.subscription = {
-      groupId: CATALOG_ITEMS_GROUP_ID,
+      groupId: readEnv(config, "CATALOG_SYNC_GROUP_ID"),
       topics: [CATALOG_ITEM_CREATED_TOPIC],
       fromBeginning: true,
       retry: {
         retries: readEnv(config, "CONSUMER_RETRY_RETRIES"),
-        initialRetryTimeMs: readEnv(config, "CONSUMER_RETRY_INITIAL_MS"),
-        maxRetryTimeMs: readEnv(config, "CONSUMER_RETRY_MAX_MS"),
+        initialDelayMs: readEnv(config, "CONSUMER_RETRY_INITIAL_MS"),
+        maxDelayMs: readEnv(config, "CONSUMER_RETRY_MAX_MS"),
+        pauseMs: readEnv(config, "CONSUMER_PAUSE_MS"),
       },
     };
   }
@@ -57,7 +59,7 @@ export class CatalogItemCreatedConsumer extends KafkaConsumerBase {
   }
 
   protected async handle(message: InboundMessage): Promise<void> {
-    const decoded = decodeCatalogItemCreated(message.value);
+    const decoded = decodeCatalogItemCreated(message.value, message);
     if (!decoded.ok) {
       await this.deadLetter.publish(message, decoded.reason, decoded.detail);
       return;
@@ -86,18 +88,15 @@ export class CatalogItemCreatedConsumer extends KafkaConsumerBase {
       if (outcome === "duplicate") {
         this.logger.debug("Evento ja processado, ignorado", context);
       } else {
-        this.logger.log("Evento de catalogo aplicado ao read model", context);
+        // applied: gravado; stale: mais antigo que a versao gravada, descartado.
+        this.logger.log("Evento de catalogo processado no read model", context);
       }
     } catch (err) {
       if (err instanceof InvariantViolationError) {
         await this.deadLetter.publish(message, "domain_invariant_violation", err.message);
         return;
       }
-      this.logger.error(
-        "Falha recuperavel ao processar evento de catalogo; offset nao sera commitado",
-        err instanceof Error ? err : new Error(String(err)),
-        { ...position, eventId: event.eventId },
-      );
+      // Sem log aqui: a base registra cada tentativa e a pausa.
       throw err;
     }
   }
