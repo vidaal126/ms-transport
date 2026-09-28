@@ -140,6 +140,7 @@ Validadas com Zod no bootstrap; a aplicação não sobe com env inválida.
 | `PORT` | `3001` | porta HTTP (8080 na imagem Docker) |
 | `LOG_LEVEL` | `info` | nível do Pino |
 | `KAFKA_CLIENT_ID` | `ms-transport` | client id do KafkaJS |
+| `KAFKA_SEND_TIMEOUT_MS` | `5000` | teto de cada envio ao Kafka (outbox e DLT; conta como falha) |
 | `CATALOG_SYNC_GROUP_ID` | `ms-transport.catalog-item-sync` | consumer group do sync; sobrescreva só para replay com group temporário |
 | `CONSUMER_RETRY_RETRIES` | `5` | novas tentativas por mensagem antes de pausar a partição |
 | `CONSUMER_RETRY_INITIAL_MS` / `CONSUMER_RETRY_MAX_MS` | `300` / `30000` | backoff exponencial com jitter |
@@ -273,3 +274,9 @@ ms-catalog (`yarn test:e2e`).
   reprocessamento é seguro (o guard de `sourceOccurredAt` descarta como
   `stale`), mas `processed_events` guarda as duas gerações de id e o group
   antigo fica órfão no broker até ser removido manualmente.
+- **Envio com timeout**: o producer tem retries ilimitados (exigência do modo
+  idempotente), então cada envio é limitado por `KAFKA_SEND_TIMEOUT_MS`. Um
+  envio que estoura o teto conta como falha: no outbox o evento fica pendente
+  e é reenviado no próximo tick; na DLT a mensagem de origem não é commitada e
+  segue o retry do consumer. Se o envio original ainda completar depois do
+  timeout, o destino recebe duplicata (o consumer deduplica pelo `eventId`).

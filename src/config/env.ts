@@ -19,6 +19,9 @@ export const envSchema = z.object({
     .transform((value) => value.split(",").map((broker) => broker.trim()))
     .pipe(z.array(z.string().regex(/^[^\s:]+:\d+$/, "formato host:porta")).min(1)),
   KAFKA_CLIENT_ID: z.string().min(1).default("ms-transport"),
+  // Teto de cada envio do producer (connect + send). Abaixo do
+  // SHUTDOWN_TIMEOUT_MS para o ciclo do outbox nao segurar o shutdown.
+  KAFKA_SEND_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
   // Group do sync do catalogo. Sobrescrever so para replay com um group
   // temporario (fixo por execucao, nunca aleatorio): o group principal segue
   // intacto e a idempotencia torna o replay seguro.

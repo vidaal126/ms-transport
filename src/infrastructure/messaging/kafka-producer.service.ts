@@ -4,10 +4,16 @@ import {
   type OnApplicationShutdown,
   type OnModuleInit,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { type Kafka, Partitioners, type Producer } from "kafkajs";
 import { type ILogger, LOGGER_TOKEN } from "@common/logger/logger.interface";
+import { withTimeout } from "@common/with-timeout";
 import type { OutboundMessage } from "./event-envelope";
 import { KAFKA_CLIENT } from "./kafka.tokens";
+
+interface ProducerEnv {
+  KAFKA_SEND_TIMEOUT_MS: number;
+}
 
 @Injectable()
 export class KafkaProducerService
@@ -16,11 +22,17 @@ export class KafkaProducerService
   private readonly producer: Producer;
   private isConnected = false;
   private connecting: Promise<void> | null = null;
+  private readonly sendTimeoutMs: number;
 
   constructor(
     @Inject(KAFKA_CLIENT) kafka: Kafka,
     @Inject(LOGGER_TOKEN) private readonly logger: ILogger,
+    config: ConfigService<ProducerEnv, true>,
   ) {
+    // Sem anotacao: atribuir direto ao campo tipado deixaria o get inferir o
+    // retorno pelo contexto, sem checagem.
+    const sendTimeoutMs = config.get("KAFKA_SEND_TIMEOUT_MS", { infer: true });
+    this.sendTimeoutMs = sendTimeoutMs;
     this.producer = kafka.producer({
       idempotent: true,
       // O producer idempotente exige retries ilimitados - qualquer teto invalida
@@ -55,7 +67,20 @@ export class KafkaProducerService
     await this.producer.disconnect();
   }
 
+  // Com retries ilimitados um envio pode nunca terminar (broker fora, lider
+  // indisponivel) e travaria o outbox inteiro (ou o consumer, no envio para a
+  // DLT). O timeout transforma isso em falha comum: o outbox deixa o evento
+  // pendente e o consumer nao commita. O envio original segue vivo no kafkajs;
+  // se completar depois, o reenvio gera duplicata, deduplicada pelo eventId.
   async send(message: OutboundMessage): Promise<void> {
+    await withTimeout(
+      this.connectAndSend(message),
+      this.sendTimeoutMs,
+      `Kafka send timeout (topic=${message.topic})`,
+    );
+  }
+
+  private async connectAndSend(message: OutboundMessage): Promise<void> {
     await this.connect();
 
     this.logger.log(
