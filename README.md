@@ -114,6 +114,20 @@ yarn start
 
 O projeto fixa Yarn 1 (`packageManager: yarn@1.22.22`, `yarn.lock` v1).
 
+### Migrations de `transport_types`
+
+A migration `evolve_transport_types_and_outbox` substituiu o par antigo
+`drop_transport_types` + `restore_transport_types_and_outbox`, que apagava a
+tabela e a recriava vazia. Agora ela altera `transport_types` preservando as
+linhas (remove `dailyCapacity` e `usedToday`, adiciona `description`), cria
+`outbox_events` e grava um `TransportTypeCreated` por tipo já existente
+(`correlationId = migration-backfill`), para que as réplicas do ms-customer e do
+ms-sales-order recebam os tipos anteriores ao outbox.
+
+Um banco local que já aplicou o par antigo precisa ser recriado: o histórico
+em `_prisma_migrations` não bate mais com o diretório de migrations e o
+`prisma migrate deploy` falha.
+
 ## Variáveis de ambiente
 
 Validadas com Zod no bootstrap; a aplicação não sobe com env inválida.
