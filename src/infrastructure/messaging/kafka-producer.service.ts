@@ -43,14 +43,14 @@ export class KafkaProducerService
   onModuleInit(): void {
     // Degradação prevista: broker indisponível não pode derrubar a aplicação.
     // A conexão fica tentando em segundo plano (retries ilimitados exigidos pelo
-    // producer idempotente), a API continua respondendo e o outbox segue
-    // gravando eventos no Postgres. A publicação retoma sozinha quando o broker
-    // volta - nenhum evento se perde, só atrasa.
+    // producer idempotente) e a API continua respondendo. Quem publica (a DLT)
+    // so commita o offset depois do ack, entao nada se perde: a mensagem de
+    // origem e reprocessada quando o broker volta.
     void this.connect().catch((): void => undefined);
   }
 
-  // onApplicationShutdown roda depois de todos os onModuleDestroy: o outbox
-  // publisher ja parou e terminou o ciclo em andamento quando chegamos aqui.
+  // onApplicationShutdown roda depois de todos os onModuleDestroy: o consumer
+  // ja parou e terminou a mensagem em andamento quando chegamos aqui.
   async onApplicationShutdown(): Promise<void> {
     await this.producer.disconnect();
   }
@@ -79,7 +79,7 @@ export class KafkaProducerService
   private async connect(): Promise<void> {
     if (this.isConnected) return;
 
-    // Uma única tentativa em voo por vez: senão cada evento pendente do outbox
+    // Uma única tentativa em voo por vez: senão cada publicação pendente
     // dispara o seu próprio connect() em paralelo contra o mesmo broker.
     this.connecting ??= this.producer
       .connect()
@@ -87,8 +87,9 @@ export class KafkaProducerService
         this.isConnected = true;
         this.logger.log("Kafka producer conectado");
       })
-      .catch((err: Error): never => {
-        this.logger.error("Falha ao conectar o Kafka producer", err, {
+      .catch((err: unknown): never => {
+        const error = err instanceof Error ? err : new Error(String(err));
+        this.logger.error("Falha ao conectar o Kafka producer", error, {
           service: KafkaProducerService.name,
           method: "connect",
         });

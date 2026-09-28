@@ -11,7 +11,7 @@ export function createKafkaLogCreator(logger: PinoLogger): logCreator {
     ({ namespace, level, log }: LogEntry): void => {
       const { message, timestamp: _timestamp, ...extra } = log;
       const fields: Record<string, unknown> = { kafka: { namespace, ...extra } };
-      const text = String(message);
+      const text = message;
 
       switch (level) {
         case logLevel.ERROR:

@@ -7,7 +7,9 @@ export async function withTimeout<T>(
 ): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new TimeoutError(message)), timeoutMs);
+    timer = setTimeout(() => {
+      reject(new TimeoutError(message));
+    }, timeoutMs);
   });
   // A promise original segue viva apos o timeout: sem este catch, uma
   // rejeicao tardia viraria unhandledRejection.

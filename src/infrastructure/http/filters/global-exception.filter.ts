@@ -80,7 +80,7 @@ function fromHttpException(
   const statusCode = exception.getStatus();
   const raw = exception.getResponse();
 
-  if (typeof raw === "object" && raw !== null) {
+  if (typeof raw === "object") {
     return { statusCode, body: raw };
   }
 

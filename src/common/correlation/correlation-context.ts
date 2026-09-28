@@ -14,8 +14,8 @@ export async function runWithCorrelationId<T>(
   // correlationId em vez de repetir a chave. PinoLogger.root so existe depois
   // que o LoggerModule registra o middleware (o tipo declarado nao reflete
   // isso); sem ele, usa o contexto atual ou executa sem contexto.
-  const root: Logger | undefined = PinoLogger.root;
-  const base = root ?? storage.getStore()?.logger;
+  const holder: { readonly root?: Logger } = PinoLogger;
+  const base = holder.root ?? storage.getStore()?.logger;
   if (!base) return fn();
   return storage.run(new Store(base.child({ correlationId })), fn);
 }

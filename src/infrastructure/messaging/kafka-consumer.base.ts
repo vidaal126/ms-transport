@@ -128,7 +128,7 @@ export abstract class KafkaConsumerBase
       retry: {
         // So erros do proprio KafkaJS (broker, rebalance) chegam aqui: falha
         // de processamento de mensagem e tratada em handleMessage.
-        restartOnFailure: async (): Promise<boolean> => true,
+        restartOnFailure: (): Promise<boolean> => Promise.resolve(true),
       },
     });
     this.consumer = consumer;
@@ -158,11 +158,18 @@ export abstract class KafkaConsumerBase
       // feito depois da persistencia (ou do ack da DLT, ou da duplicata).
       await consumer.run({
         autoCommit: false,
-        eachMessage: async ({ topic, partition, message, heartbeat, pause }): Promise<void> => {
-          const inbound = toInboundMessage(topic, partition, message);
+        eachMessage: async (payload): Promise<void> => {
+          const inbound = toInboundMessage(payload.topic, payload.partition, payload.message);
           await runWithCorrelationId(
             resolveCorrelationId(inbound.headers[EVENT_HEADERS.correlationId]),
-            () => this.handleMessage(consumer, inbound, retry, heartbeat, pause),
+            () =>
+              this.handleMessage(
+                consumer,
+                inbound,
+                retry,
+                () => payload.heartbeat(),
+                () => payload.pause(),
+              ),
           );
         },
       });

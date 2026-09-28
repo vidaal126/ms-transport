@@ -32,7 +32,7 @@ const envValues: Partial<Env> = {
   CONSUMER_PAUSE_MS: 30_000,
 };
 const config: Pick<ConfigService<Env, true>, "get"> = {
-  get: ((key: keyof Env) => envValues[key]) as ConfigService<Env, true>["get"],
+  get: ((key: keyof Env) => envValues[key]),
 };
 
 function message(value: unknown): InboundMessage {

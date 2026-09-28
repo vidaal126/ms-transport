@@ -14,7 +14,6 @@
       "@domain/*": ["src/domain/*"],
       "@application/*": ["src/application/*"],
       "@infrastructure/*": ["src/infrastructure/*"],
-      "@presentation/*": ["src/presentation/*"],
       "@config/*": ["src/config/*"],
       "@common/*": ["src/common/*"]
     },
@@ -23,6 +22,7 @@
     "strict": true,
     "strictNullChecks": true,
     "noImplicitAny": true,
+    "noUncheckedIndexedAccess": true,
     "forceConsistentCasingInFileNames": true
   }
 }
