@@ -34,6 +34,10 @@ export const envSchema = z.object({
   CONSUMER_RETRY_MAX_MS: z.coerce.number().int().positive().default(30_000),
   CONSUMER_PAUSE_MS: z.coerce.number().int().positive().default(30_000),
 
+  // Outbox dos eventos transport.TransportType*.
+  OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(2_000),
+  OUTBOX_BATCH_SIZE: z.coerce.number().int().positive().max(1_000).default(20),
+
   THROTTLE_DEFAULT_TTL_MS: z.coerce.number().int().positive().default(60_000),
   THROTTLE_DEFAULT_LIMIT: z.coerce.number().int().positive().default(100),
 

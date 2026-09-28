@@ -4,7 +4,11 @@ Microsserviço de transporte (NestJS, Prisma, PostgreSQL, Kafka):
 
 - **Kafka**: consumer de `catalog.ItemCreated` que mantém o read model
   `catalog_items` com o que transporte precisa de cada item (peso e dimensões).
-- **HTTP**: leitura do read model e health checks.
+- **Tipos de transporte**: dono do `TransportType` (CRUD via HTTP), com os
+  eventos `transport.TransportTypeCreated` e `transport.TransportTypeUpdated`
+  publicados via Transactional Outbox. O ms-customer e o ms-sales-order mantêm
+  réplicas a partir deles.
+- **HTTP**: tipos de transporte, leitura do read model e health checks.
 
 ## Arquitetura
 
@@ -134,6 +138,10 @@ Validadas com Zod no bootstrap; a aplicação não sobe com env inválida.
 
 | Método | Rota | Descrição |
 |---|---|---|
+| `POST` | `/transport-types` | cria (`name` único, `description?`); 409 se o nome existir |
+| `PUT` | `/transport-types/:id` | altera `name`, `description` (null limpa) e `active`; sem mudança, não publica evento |
+| `GET` | `/transport-types` | lista paginada (`page`, `limit` até 100) com `total` |
+| `GET` | `/transport-types/:id` | 404 se não existir |
 | `GET` | `/catalog-items/:itemId` | item do read model (400 se não for UUID, 404 se não existir) |
 | `GET` | `/health/live` | liveness: não checa dependências |
 | `GET` | `/health/ready` | readiness: banco, broker Kafka e consumer (down com a partição pausada ou o consumer degradado) |
@@ -144,13 +152,19 @@ Validadas com Zod no bootstrap; a aplicação não sobe com env inválida.
 |---|---|
 | `catalog.ItemCreated` | consumido (publicado pelo ms-catalog) |
 | `catalog.ItemCreated.DLT` | publicado: mensagens não recuperáveis, retenção infinita |
+| `transport.TransportTypeCreated` | publicado via outbox, key = id do tipo |
+| `transport.TransportTypeUpdated` | publicado via outbox a cada mudança real |
+
+Payload dos eventos de tipo de transporte (envelope v2, `schemaVersion: 2`):
+`{ id, name, description, active }`, sempre com o estado completo, para as
+réplicas guardarem só o último estado.
 
 | Consumer group | Uso |
 |---|---|
 | `ms-transport.catalog-item-sync` | principal, mantém o read model |
 | valor de `CATALOG_SYNC_GROUP_ID` | replay com group temporário |
 
-O broker do compose roda com auto-create desligado: os dois tópicos vêm do
+O broker do compose roda com auto-create desligado: os tópicos vêm do
 `kafka-init`. Rodando fora do compose, o ms-transport cria a DLT pelo admin do
 KafkaJS se ela não existir; o tópico de eventos precisa existir.
 

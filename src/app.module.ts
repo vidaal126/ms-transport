@@ -9,6 +9,7 @@ import { PrismaModule } from "@infrastructure/database/prisma/prisma.module";
 import { HealthModule } from "@infrastructure/health/health.module";
 import { GlobalExceptionFilter } from "@infrastructure/http/filters/global-exception.filter";
 import { MessagingModule } from "@infrastructure/messaging/messaging.module";
+import { TransportTypeModule } from "@infrastructure/transport-type.module";
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { MessagingModule } from "@infrastructure/messaging/messaging.module";
     PrismaModule,
     MessagingModule,
     CatalogSyncModule,
+    TransportTypeModule,
     HealthModule,
   ],
   providers: [
