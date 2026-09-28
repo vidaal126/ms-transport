@@ -1,6 +1,6 @@
 import {
   Injectable,
-  type OnModuleDestroy,
+  type OnApplicationShutdown,
   type OnModuleInit,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
@@ -10,7 +10,7 @@ import { PrismaClient } from "@infrastructure/database/generated/client";
 @Injectable()
 export class PrismaService
   extends PrismaClient
-  implements OnModuleInit, OnModuleDestroy
+  implements OnModuleInit, OnApplicationShutdown
 {
   constructor(config: ConfigService) {
     const databaseUrl = config.getOrThrow<string>("DATABASE_URL");
@@ -22,7 +22,10 @@ export class PrismaService
     await this.$connect();
   }
 
-  async onModuleDestroy(): Promise<void> {
+  // onApplicationShutdown roda depois de todos os onModuleDestroy (consumer
+  // Kafka ja parou) e depois do servidor HTTP fechar: nenhuma query em
+  // andamento perde a conexao.
+  async onApplicationShutdown(): Promise<void> {
     await this.$disconnect();
   }
 }

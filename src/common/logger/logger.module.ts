@@ -2,6 +2,11 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Global, Module, RequestMethod } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { LoggerModule as PinoLoggerModule } from "nestjs-pino";
+import {
+  CORRELATION_ID_HEADER,
+  resolveCorrelationId,
+} from "@common/correlation/correlation-id";
+import { type Env, readEnv } from "@config/env";
 import { LOGGER_TOKEN } from "./logger.interface";
 import { PinoLoggerService } from "./pino-logger.service";
 
@@ -13,15 +18,35 @@ type ExpressLike = IncomingMessage & { route?: { path?: string } };
     PinoLoggerModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
+      useFactory: (config: ConfigService<Env, true>) => ({
         forRoutes: [{ path: "*", method: RequestMethod.ALL }],
         pinoHttp: {
-          level: config.get<string>("LOG_LEVEL", "info"),
+          level: readEnv(config, "LOG_LEVEL"),
           transport:
-            config.get<string>("NODE_ENV") !== "production"
+            readEnv(config, "NODE_ENV") !== "production"
               ? { target: "pino-pretty", options: { singleLine: true } }
               : undefined,
-          customAttributeKeys: { responseTime: "duration" },
+          // O id da requisicao e o correlationId: vem do header (se valido)
+          // ou e gerado, e volta no header da resposta.
+          genReqId: (req: IncomingMessage, res: ServerResponse): string => {
+            const correlationId = resolveCorrelationId(
+              req.headers[CORRELATION_ID_HEADER],
+            );
+            res.setHeader(CORRELATION_ID_HEADER, correlationId);
+            return correlationId;
+          },
+          autoLogging: {
+            ignore: (req: IncomingMessage): boolean =>
+              (req.url?.startsWith("/health") ?? false) || (req.url?.startsWith("/metrics") ?? false),
+          },
+          // quietReqLogger + reqId renomeado: o logger da requisicao (usado
+          // pelo nestjs-pino em todo log do request) carrega so correlationId,
+          // uma vez. Via customProps ele sairia duplicado na linha final.
+          quietReqLogger: true,
+          customAttributeKeys: {
+            responseTime: "duration",
+            reqId: "correlationId",
+          },
           customLogLevel: (
             _req: IncomingMessage,
             res: ServerResponse,

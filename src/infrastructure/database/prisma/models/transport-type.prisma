@@ -1,11 +1,33 @@
+// Dono do tipo de transporte. Id gerado no dominio (node:crypto randomUUID).
 model TransportType {
-  id            String   @id @default(uuid())
-  name          String   @unique
-  dailyCapacity Int
-  usedToday     Int      @default(0)
-  active        Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id          String   @id
+  name        String   @unique
+  description String?
+  active      Boolean  @default(true)
+  // Controle otimista: o update so grava se a versao lida ainda for a atual.
+  version     Int      @default(0)
+  createdAt   DateTime
+  updatedAt   DateTime
 
+  @@index([createdAt, id])
   @@map("transport_types")
+}
+
+// Transactional Outbox: eventos gravados na mesma transacao do agregado e
+// publicados pelo OutboxPublisherService. id = eventId do envelope.
+// sequence da a ordem de publicacao: createdAt empata e nao e monotonico
+// entre transacoes, entao nao serve para ordenar eventos do mesmo agregado.
+model OutboxEvent {
+  id            String    @id @default(uuid())
+  sequence      BigInt    @unique @default(autoincrement())
+  aggregateId   String
+  eventType     String
+  schemaVersion Int
+  correlationId String
+  payload       Json
+  createdAt     DateTime  @default(now())
+  publishedAt   DateTime?
+
+  @@index([publishedAt, createdAt])
+  @@map("outbox_events")
 }
