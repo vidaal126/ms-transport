@@ -17,6 +17,7 @@ import {
   KafkaConsumerBase,
 } from "@infrastructure/messaging/kafka-consumer.base";
 import { KAFKA_CLIENT } from "@infrastructure/messaging/kafka.tokens";
+import { MetricsService } from "@infrastructure/metrics/metrics.service";
 import { decodeCatalogItemCreated } from "./catalog-item-created.decoder";
 
 export const CATALOG_ITEM_CREATED_TOPIC = "catalog.ItemCreated";
@@ -38,6 +39,7 @@ export class CatalogItemCreatedConsumer extends KafkaConsumerBase {
     @Inject(LOGGER_TOKEN) logger: ILogger,
     @Inject(SYNC_CATALOG_ITEM) private readonly syncCatalogItem: SyncCatalogItemPort,
     @Inject(DEAD_LETTER_PORT) private readonly deadLetter: DeadLetterPort,
+    private readonly metrics: MetricsService,
     config: ConfigService<Env, true>,
   ) {
     super(kafka, logger);
@@ -62,6 +64,7 @@ export class CatalogItemCreatedConsumer extends KafkaConsumerBase {
     const decoded = decodeCatalogItemCreated(message.value, message);
     if (!decoded.ok) {
       await this.deadLetter.publish(message, decoded.reason, decoded.detail);
+      this.metrics.recordConsumed(message.topic, "dead_letter");
       return;
     }
 
@@ -84,6 +87,7 @@ export class CatalogItemCreatedConsumer extends KafkaConsumerBase {
 
     try {
       const outcome = await this.syncCatalogItem.execute(event);
+      this.metrics.recordConsumed(message.topic, outcome);
       const context = { ...position, eventId: event.eventId, itemId: event.itemId, outcome };
       switch (outcome) {
         case "applied":
@@ -100,10 +104,15 @@ export class CatalogItemCreatedConsumer extends KafkaConsumerBase {
     } catch (err) {
       if (err instanceof InvariantViolationError) {
         await this.deadLetter.publish(message, "domain_invariant_violation", err.message);
+        this.metrics.recordConsumed(message.topic, "dead_letter");
         return;
       }
       // Sem log aqui: a base registra cada tentativa e a pausa.
       throw err;
     }
+  }
+
+  protected override onRetryExhausted(message: InboundMessage): void {
+    this.metrics.recordConsumed(message.topic, "retry_exhausted");
   }
 }

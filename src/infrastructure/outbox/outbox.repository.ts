@@ -14,6 +14,10 @@ export class OutboxRepository {
     });
   }
 
+  async countPending(): Promise<number> {
+    return this.prisma.outboxEvent.count({ where: { publishedAt: null } });
+  }
+
   async markPublished(ids: readonly string[], publishedAt: Date): Promise<void> {
     await this.prisma.outboxEvent.updateMany({
       where: { id: { in: [...ids] } },

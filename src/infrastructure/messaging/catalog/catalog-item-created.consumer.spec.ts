@@ -8,6 +8,7 @@ import { InvalidCatalogItemError } from "@domain/errors/catalog-item.errors";
 import type { InboundMessage } from "@infrastructure/messaging/kafka-consumer.base";
 import { InMemoryCatalogItemRepository } from "../../../test/catalog-item.fakes";
 import { CatalogItemCreatedConsumer } from "./catalog-item-created.consumer";
+import { MetricsService } from "@infrastructure/metrics/metrics.service";
 
 class TestableConsumer extends CatalogItemCreatedConsumer {
   process(message: InboundMessage): Promise<void> {
@@ -68,7 +69,10 @@ describe("CatalogItemCreatedConsumer.handle", () => {
   let deadLetters: Array<{ reason: DeadLetterReason; offset: string }>;
   let consumer: TestableConsumer;
 
+  let metrics: MetricsService;
+
   beforeEach(() => {
+    metrics = new MetricsService();
     repository = new InMemoryCatalogItemRepository();
     deadLetters = [];
     const deadLetter: DeadLetterPort = {
@@ -82,6 +86,7 @@ describe("CatalogItemCreatedConsumer.handle", () => {
       silentLogger,
       new SyncCatalogItemUseCase(repository),
       deadLetter,
+      metrics,
       config as ConfigService<Env, true>,
     );
   });
@@ -139,6 +144,7 @@ describe("CatalogItemCreatedConsumer.handle", () => {
       silentLogger,
       new SyncCatalogItemUseCase(repository),
       failingDeadLetter,
+      metrics,
       config as ConfigService<Env, true>,
     );
 

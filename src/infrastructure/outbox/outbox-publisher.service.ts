@@ -8,6 +8,7 @@ import { ConfigService } from "@nestjs/config";
 import { type ILogger, LOGGER_TOKEN } from "@common/logger/logger.interface";
 import { type Env, readEnv } from "@config/env";
 import { KafkaProducerService } from "@infrastructure/messaging/kafka-producer.service";
+import { MetricsService } from "@infrastructure/metrics/metrics.service";
 import { toOutboundMessage } from "./outbox-message.mapper";
 import { OutboxRepository } from "./outbox.repository";
 
@@ -41,6 +42,7 @@ export class OutboxPublisherService implements OnModuleInit, OnModuleDestroy {
     private readonly outbox: OutboxRepository,
     private readonly kafkaProducer: KafkaProducerService,
     @Inject(LOGGER_TOKEN) private readonly logger: ILogger,
+    private readonly metrics: MetricsService,
     config: ConfigService<Env, true>,
   ) {
     this.pollIntervalMs = readEnv(config, "OUTBOX_POLL_INTERVAL_MS");
@@ -48,6 +50,11 @@ export class OutboxPublisherService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit(): void {
+    this.metrics.registerAsyncGauge(
+      "outbox_pending_events",
+      "Eventos do outbox ainda nao publicados",
+      () => this.outbox.countPending(),
+    );
     this.intervalHandle = setInterval((): void => {
       if (this.currentCycle || this.stopping) return;
       // pollAndPublish nunca rejeita (erros sao logados dentro dele).
@@ -79,6 +86,7 @@ export class OutboxPublisherService implements OnModuleInit, OnModuleDestroy {
           await this.kafkaProducer.send(toOutboundMessage(event));
 
           publishedIds.push(event.id);
+          this.metrics.recordOutboxPublished(event.eventType);
 
           this.logger.log(
             `Evento publicado: ${event.eventType} (aggregateId=${event.aggregateId})`,

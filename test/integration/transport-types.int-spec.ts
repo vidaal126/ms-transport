@@ -3,6 +3,7 @@ import type { INestApplication } from "@nestjs/common";
 import { KafkaContainer, type StartedKafkaContainer } from "@testcontainers/kafka";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { z } from "zod";
+import { sampleValue } from "../../src/test/metrics.helpers";
 import { KafkaTestClient } from "./kafka-test-client";
 
 const CREATED_TOPIC = "transport.TransportTypeCreated";
@@ -171,5 +172,22 @@ describe("ms-transport: tipos de transporte (integracao)", () => {
     expect(found.status).toBe(200);
     expect(missing.status).toBe(404);
     expect(page.body).toMatchObject({ total: 1, page: 1, pageSize: 10 });
+  });
+
+  it("GET /metrics expoe latencia por template de rota e eventos publicados", async () => {
+    const response = await fetch(`${baseUrl}/metrics`);
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/plain");
+    expect(
+      sampleValue(text, "http_request_duration_seconds_count", {
+        method: "GET",
+        route: "/transport-types/:id",
+        status_code: "200",
+      }),
+    ).toBeGreaterThanOrEqual(1);
+    expect(sampleValue(text, "outbox_events_published_total", { event_type: "TransportTypeCreated" })).toBe(1);
+    expect(sampleValue(text, "outbox_pending_events", {})).toBe(0);
   });
 });

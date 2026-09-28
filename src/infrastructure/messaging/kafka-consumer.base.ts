@@ -221,6 +221,7 @@ export abstract class KafkaConsumerBase
         if (this.health.status !== "running") this.setStatus("running");
         return;
       case "exhausted": {
+        this.onRetryExhausted(message);
         // seek antes de retornar: o KafkaJS resolve o offset localmente quando
         // eachMessage retorna, e o seek pendente sobrepoe isso no proximo
         // fetch (com autoCommit desligado, seek nao commita nada).
@@ -238,6 +239,11 @@ export abstract class KafkaConsumerBase
         // Shutdown durante o backoff: sem commit, a mensagem volta no proximo start.
         return;
     }
+  }
+
+  // Gancho para metricas: retry esgotado e particao pausada.
+  protected onRetryExhausted(_message: InboundMessage): void {
+    // padrao: nada alem do log da base.
   }
 
   // A mensagem ja foi persistida (ou enviada para a DLT): se o commit falhar
