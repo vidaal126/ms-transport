@@ -108,6 +108,23 @@ describe("processWithRetry", () => {
     expect(result).toEqual({ outcome: "interrupted" });
     expect(calls).toBe(1);
   });
+
+  it("falha de heartbeat (rebalance) propaga para o KafkaJS nao avancar a mensagem", async () => {
+    const rebalance = new Error("REBALANCE_IN_PROGRESS");
+    const result = processWithRetry(
+      async () => {
+        throw new Error("banco fora");
+      },
+      {
+        ...noWait,
+        heartbeat: async (): Promise<void> => {
+          throw rebalance;
+        },
+      },
+    );
+
+    await expect(result).rejects.toBe(rebalance);
+  });
 });
 
 describe("KafkaConsumerBase: commit, retry e pausa", () => {
@@ -136,7 +153,9 @@ describe("KafkaConsumerBase: commit, retry e pausa", () => {
       this.runConfig = config;
       this.onRun?.();
     }
+    commitError: Error | undefined;
     async commitOffsets(offsets: FakeConsumer["commits"]): Promise<void> {
+      if (this.commitError) throw this.commitError;
       this.commits.push(...offsets);
     }
     seek(position: { topic: string; partition: number; offset: string }): void {
@@ -214,6 +233,21 @@ describe("KafkaConsumerBase: commit, retry e pausa", () => {
 
     expect(fake.runConfig?.autoCommit).toBe(false);
     expect(fake.commits).toEqual([{ topic: "t", partition: 0, offset: "8" }]);
+    expect(fake.seeks).toEqual([]);
+    await consumer.onModuleDestroy();
+  });
+
+  it("falha no commit nao propaga para o KafkaJS nem repete o handler", async () => {
+    let calls = 0;
+    const { consumer, fake, deliver } = await startWith(fastRetry, async () => {
+      calls += 1;
+    });
+    fake.commitError = new Error("REBALANCE_IN_PROGRESS");
+
+    await expect(deliver()).resolves.toBeDefined();
+
+    expect(calls).toBe(1);
+    expect(fake.commits).toEqual([]);
     expect(fake.seeks).toEqual([]);
     await consumer.onModuleDestroy();
   });

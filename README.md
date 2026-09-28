@@ -68,8 +68,15 @@ Retry de erro recuperável:
 3. Depois de `CONSUMER_PAUSE_MS`, a partição é retomada a partir da mesma
    mensagem, e o ciclo recomeça se o erro persistir.
 
-O erro nunca chega ao KafkaJS: não há crash-loop do consumer e nenhuma mensagem
-é pulada por erro transitório. Um SIGTERM durante o backoff interrompe a espera
+O erro do handler nunca chega ao KafkaJS: não há crash-loop do consumer e
+nenhuma mensagem é pulada por erro transitório. Duas situações de rebalance têm
+tratamento próprio:
+
+- falha no commit do offset: a mensagem já foi persistida (ou foi para a DLT),
+  então o erro é só logado; se ela for reentregue, cai no caminho de duplicata;
+- falha no heartbeat durante o backoff: o erro sobe de propósito para o
+  KafkaJS, que refaz o join sem avançar a mensagem (engolir o erro deixaria um
+  commit posterior passar por cima dela). Um SIGTERM durante o backoff interrompe a espera
 sem commit; a mensagem volta no próximo start.
 
 Headers da DLT: `dlt-reason`, `dlt-detail`, `dlt-source-topic`,
@@ -229,3 +236,10 @@ ms-catalog (`yarn test:e2e`).
   intervenção. O readiness fica `down` e cada ciclo é logado em error.
 - **Invariantes duplicadas**: as regras de peso e dimensões são uma cópia das
   do ms-catalog; mudanças lá precisam ser replicadas aqui.
+- **Migração de ambientes antigos**: versões anteriores usavam o group
+  `ms-transport.catalog-items` e derivavam o `eventId` de v1 por sha256. O group
+  atual (`ms-transport.catalog-item-sync`) começa do início do tópico e os
+  eventos v1 ganham novos `eventId` (UUID v5 de tópico+partição+offset). O
+  reprocessamento é seguro (o guard de `sourceOccurredAt` descarta como
+  `stale`), mas `processed_events` guarda as duas gerações de id e o group
+  antigo fica órfão no broker até ser removido manualmente.

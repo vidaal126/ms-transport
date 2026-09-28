@@ -85,11 +85,17 @@ export class CatalogItemCreatedConsumer extends KafkaConsumerBase {
     try {
       const outcome = await this.syncCatalogItem.execute(event);
       const context = { ...position, eventId: event.eventId, itemId: event.itemId, outcome };
-      if (outcome === "duplicate") {
-        this.logger.debug("Evento ja processado, ignorado", context);
-      } else {
-        // applied: gravado; stale: mais antigo que a versao gravada, descartado.
-        this.logger.log("Evento de catalogo processado no read model", context);
+      switch (outcome) {
+        case "applied":
+          this.logger.log("Evento de catalogo processado no read model", context);
+          return;
+        case "duplicate":
+          this.logger.debug("Evento ja processado, ignorado", context);
+          return;
+        case "stale":
+          // Mais antigo que a versao gravada (reordenacao/replay): descartado.
+          this.logger.debug("Evento mais antigo que o read model, ignorado", context);
+          return;
       }
     } catch (err) {
       if (err instanceof InvariantViolationError) {

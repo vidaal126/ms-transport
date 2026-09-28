@@ -61,7 +61,11 @@ const START_BACKOFF_BASE_MS = 1_000;
 // - lancar = falha recuperavel => nada e commitado; retry em processo com
 //   backoff exponencial e jitter; esgotado, seek de volta para a mensagem e
 //   pausa da particao por pauseMs. Nunca pula mensagem e nunca deixa o erro
-//   chegar ao KafkaJS (que crasharia e reiniciaria o consumer em loop).
+//   do handler chegar ao KafkaJS (que crasharia e reiniciaria o consumer).
+// Excecao deliberada: falha de heartbeat (rebalance em andamento) sobe para o
+// KafkaJS, que refaz o join sem avancar o offset local da mensagem. Engolir
+// esse erro faria o KafkaJS seguir para a proxima mensagem da particao, e um
+// commit posterior passaria por cima da mensagem nao processada.
 export abstract class KafkaConsumerBase
   implements OnApplicationBootstrap, OnModuleDestroy
 {
@@ -213,9 +217,7 @@ export abstract class KafkaConsumerBase
 
     switch (result.outcome) {
       case "handled":
-        await consumer.commitOffsets([
-          { topic: message.topic, partition: message.partition, offset: nextOffset(message.offset) },
-        ]);
+        await this.commitQuietly(consumer, message);
         if (this.health.status !== "running") this.setStatus("running");
         return;
       case "exhausted": {
@@ -235,6 +237,23 @@ export abstract class KafkaConsumerBase
       case "interrupted":
         // Shutdown durante o backoff: sem commit, a mensagem volta no proximo start.
         return;
+    }
+  }
+
+  // A mensagem ja foi persistida (ou enviada para a DLT): se o commit falhar
+  // (ex.: rebalance), ela volta a ser entregue e cai no caminho de duplicata.
+  // Propagar faria o KafkaJS repetir o handler e, esgotado, reiniciar o consumer.
+  private async commitQuietly(consumer: Consumer, message: InboundMessage): Promise<void> {
+    const offset = nextOffset(message.offset);
+    try {
+      await consumer.commitOffsets([{ topic: message.topic, partition: message.partition, offset }]);
+    } catch (err) {
+      this.logger.warn("Falha ao commitar offset; a mensagem sera reentregue como duplicata", {
+        topic: message.topic,
+        partition: message.partition,
+        offset,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -315,7 +334,8 @@ export interface RetryOptions {
   readonly random?: () => number;
 }
 
-// 1 tentativa + policy.retries novas tentativas. Nunca lanca.
+// 1 tentativa + policy.retries novas tentativas. Erro do handler nunca sai
+// daqui; so a falha de heartbeat propaga (ver contrato em KafkaConsumerBase).
 export async function processWithRetry(
   handle: () => Promise<void>,
   options: RetryOptions,
@@ -332,7 +352,7 @@ export async function processWithRetry(
       const delayMs = retryDelayMs(attempt + 1, policy, options.random);
       options.onRetry(attempt + 1, delayMs, error);
       // Heartbeat antes de esperar: o backoff nao pode estourar a sessao do
-      // grupo e provocar rebalance.
+      // grupo e provocar rebalance. Se ele falhar, o erro propaga de proposito.
       await options.heartbeat();
       if (!(await options.sleep(delayMs))) return { outcome: "interrupted" };
     }
